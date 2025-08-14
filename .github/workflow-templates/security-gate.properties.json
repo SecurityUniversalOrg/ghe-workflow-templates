@@ -1,0 +1,9 @@
+{
+  "name": "Security \u2022 Gate (Trivy + SBOM + Cosign)",
+  "description": "Scan an existing image, generate SBOM, sign and attach SBOM attestation.",
+  "categories": [
+    "Security",
+    "Compliance"
+  ],
+  "iconName": "shield"
+}

@@ -1,0 +1,13 @@
+{
+  "name": "Container \u2022 Build \u2022 Scan \u2022 Sign \u2022 Push",
+  "description": "Build with buildx, gate with Trivy, generate SBOM (Syft), sign & attach (Cosign), push.",
+  "categories": [
+    "Containers",
+    "Security",
+    "Supply Chain"
+  ],
+  "iconName": "container",
+  "filePatterns": [
+    "Dockerfile"
+  ]
+}

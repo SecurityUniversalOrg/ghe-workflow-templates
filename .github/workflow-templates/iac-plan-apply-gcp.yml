@@ -1,0 +1,9 @@
+name: IaC • Plan/Apply • GCP
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  plan-apply:
+    uses: SecurityUniversalOrg/platform-arc-infra/.github/workflows/plan-apply-gcp.yaml@main

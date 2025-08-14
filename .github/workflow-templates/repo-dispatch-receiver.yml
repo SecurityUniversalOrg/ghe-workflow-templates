@@ -1,0 +1,13 @@
+name: Repo Dispatch • Receiver
+on:
+  repository_dispatch:
+    types: [base-images-updated, dev-deploy, prod-deploy]
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show payload
+        run: |
+          echo "Event type: ${{ github.event.action }}"
+          echo "Payload:"
+          echo "${{ toJson(github.event.client_payload) }}"

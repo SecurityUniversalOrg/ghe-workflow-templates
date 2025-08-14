@@ -1,0 +1,37 @@
+name: Container • Cascade Rebuilds
+on:
+  workflow_dispatch:
+    inputs:
+      subset_roots:
+        description: "Comma-separated base image names to rebuild (optional)"
+        required: false
+        type: string
+      dependency_graph_path:
+        description: "Path to dependency-graph.yaml"
+        required: false
+        default: "dependency-graph.yaml"
+        type: string
+      event_owner:
+        description: "Owner of downstream repo for repository_dispatch"
+        required: true
+        type: string
+      event_repo:
+        description: "Downstream repo name"
+        required: true
+        type: string
+      event_type:
+        description: "repository_dispatch event type"
+        required: false
+        default: "base-images-updated"
+        type: string
+jobs:
+  cascade:
+    uses: SecurityUniversalOrg/platform-actions/workflows/cascade-rebuilds.yaml@main
+    with:
+      dependency_graph_path: "${{ inputs.dependency_graph_path }}"
+      subset_roots: "${{ inputs.subset_roots }}"
+      event_owner: "${{ inputs.event_owner }}"
+      event_repo: "${{ inputs.event_repo }}"
+      event_type: "${{ inputs.event_type }}"
+    secrets:
+      REPO_DISPATCH_TOKEN: "${{ secrets.REPO_DISPATCH_TOKEN }}"

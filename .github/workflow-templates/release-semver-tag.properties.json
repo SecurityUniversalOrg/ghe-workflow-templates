@@ -1,0 +1,8 @@
+{
+  "name": "Release \u2022 SemVer Tag",
+  "description": "Bump semantic version from the latest tag and push a new tag.",
+  "categories": [
+    "Release"
+  ],
+  "iconName": "tag"
+}

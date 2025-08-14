@@ -1,0 +1,20 @@
+name: CI • Validate templates
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: yamllint
+        run: |
+          sudo pipx install yamllint || true
+          yamllint -d "{extends: default, rules: {line-length: {max: 140}}}" . || true
+  list-templates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          ls -al .github/workflow-templates

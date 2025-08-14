@@ -1,0 +1,9 @@
+{
+  "name": "IaC \u2022 Plan/Apply \u2022 GCP",
+  "description": "Run Terragrunt plan/apply for GCP using OIDC.",
+  "categories": [
+    "Infrastructure",
+    "Cloud"
+  ],
+  "iconName": "terraform"
+}

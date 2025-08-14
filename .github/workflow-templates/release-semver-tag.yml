@@ -1,0 +1,40 @@
+name: Release • SemVer Tag
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "part to bump"
+        type: choice
+        default: "patch"
+        options: ["major","minor","patch"]
+        required: true
+permissions:
+  contents: write
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Get latest tag
+        id: tag
+        run: |
+          set -euo pipefail
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+      - name: Bump
+        id: bump
+        run: |
+          set -euo pipefail
+          IFS='.' read -r MAJ MIN PAT <<< "${{ steps.tag.outputs.latest#v }}"
+          case "${{ inputs.bump }}" in
+            major) MAJ=$((MAJ+1)); MIN=0; PAT=0;;
+            minor) MIN=$((MIN+1)); PAT=0;;
+            patch) PAT=$((PAT+1));;
+          esac
+          echo "next=v${MAJ}.${MIN}.${PAT}" >> "$GITHUB_OUTPUT"
+      - name: Create tag
+        run: |
+          git tag "${{ steps.bump.outputs.next }}"
+          git push origin "${{ steps.bump.outputs.next }}"

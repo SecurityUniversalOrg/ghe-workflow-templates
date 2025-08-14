@@ -1,0 +1,9 @@
+{
+  "name": "Container \u2022 Cascade Rebuilds",
+  "description": "Rebuild dependents based on a YAML dependency graph and dispatch downstream events.",
+  "categories": [
+    "Containers",
+    "Automation"
+  ],
+  "iconName": "dependabot"
+}

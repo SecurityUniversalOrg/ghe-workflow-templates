@@ -1,0 +1,9 @@
+{
+  "name": "ARC \u2022 Runner Set Deploy",
+  "description": "Install ARC controller and a runner scale set from your platform-arc-runner-charts values.",
+  "categories": [
+    "ARC",
+    "Kubernetes"
+  ],
+  "iconName": "server"
+}

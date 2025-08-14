@@ -1,0 +1,38 @@
+name: Container • Build • Scan • Sign • Push
+on:
+  workflow_dispatch:
+    inputs:
+      image_name:
+        description: "Full image name (e.g., docker.io/org/app)"
+        required: true
+        type: string
+      tags:
+        description: "Comma-separated tags (first is primary)"
+        required: true
+        type: string
+      build_mode:
+        description: "daemon or oci-dir"
+        required: false
+        default: "daemon"
+        type: choice
+        options: ["daemon","oci-dir"]
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  supplychain:
+    uses: SecurityUniversalOrg/platform-actions/workflows/build-scan-sign-push.yaml@main
+    with:
+      context: .
+      dockerfile: ./Dockerfile
+      image_name: "${{ inputs.image_name }}"
+      tags: "${{ inputs.tags }}"
+      build_mode: "${{ inputs.build_mode }}"
+      cve_severity: "CRITICAL,HIGH"
+      ignore_unfixed: true
+      sign: true
+      attach_sbom: true
+    secrets:
+      dockerhub_username: "${{ secrets.DOCKERHUB_USERNAME }}"
+      dockerhub_token:    "${{ secrets.DOCKERHUB_TOKEN }}"

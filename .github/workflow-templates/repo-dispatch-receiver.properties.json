@@ -1,0 +1,8 @@
+{
+  "name": "Repo Dispatch \u2022 Receiver",
+  "description": "Minimal receiver that prints the incoming repository_dispatch payload.",
+  "categories": [
+    "Automation"
+  ],
+  "iconName": "mail"
+}

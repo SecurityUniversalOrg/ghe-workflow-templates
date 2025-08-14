@@ -1,0 +1,9 @@
+name: IaC • Plan/Apply • AZURE
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  plan-apply:
+    uses: SecurityUniversalOrg/platform-arc-infra/.github/workflows/plan-apply-azure.yaml@main

@@ -1,0 +1,34 @@
+name: ARC • Runner Set Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      github_config_url:
+        description: "GitHub config URL (org/enterprise/repo) for runners"
+        required: true
+        type: string
+      values_group:
+        description: "Runner group values file (iac/build/sec-scan/k8s)"
+        required: true
+        default: "iac"
+        type: choice
+        options: ["iac","build","sec-scan","k8s"]
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Helm & Helmfile
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          curl -sLf https://github.com/helmfile/helmfile/releases/latest/download/helmfile_$(uname -s)_$(uname -m).tar.gz             | tar -xz && sudo mv helmfile /usr/local/bin/
+      - name: Install ARC controller
+        run: |
+          NAMESPACE="arc-systems"
+          helm install arc             --namespace "${NAMESPACE}"             --create-namespace             oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller
+      - name: Deploy runner set
+        run: |
+          NAMESPACE="arc-runners"
+          VAL_GROUP="values/runner-sets/${{ inputs.values_group }}.yaml"
+          helm install "arc-runner-set-${{ inputs.values_group }}"             --namespace "${NAMESPACE}" --create-namespace             -f values/runner-sets/common.yaml -f "${VAL_GROUP}"             --set githubConfigUrl="${{ inputs.github_config_url }}"             --set githubConfigSecret.existingSecret="github-pat"             oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set

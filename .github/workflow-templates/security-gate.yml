@@ -1,0 +1,35 @@
+name: Security • Gate (Trivy + SBOM + Cosign)
+on:
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: "Image ref to scan (e.g., docker.io/org/app:tag)"
+        required: true
+        type: string
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Trivy
+        uses: SecurityUniversalOrg/platform-actions/actions/setup-trivy@main
+      - name: Setup Syft
+        uses: SecurityUniversalOrg/platform-actions/actions/setup-syft@main
+      - name: Trivy scan
+        run: |
+          trivy image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed "${{ inputs.image_ref }}"
+      - name: SBOM
+        run: |
+          syft "docker://${{ inputs.image_ref }}" -o spdx-json > sbom.spdx.json
+      - name: Cosign sign
+        uses: SecurityUniversalOrg/platform-actions/actions/cosign-sign-image@main
+        with:
+          image_ref: "${{ inputs.image_ref }}"
+      - name: Cosign attach SBOM
+        uses: SecurityUniversalOrg/platform-actions/actions/cosign-attest-sbom@main
+        with:
+          image_ref: "${{ inputs.image_ref }}"
+          sbom_path: "sbom.spdx.json"
