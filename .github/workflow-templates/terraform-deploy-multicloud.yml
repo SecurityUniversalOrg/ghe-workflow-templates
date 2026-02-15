@@ -161,3 +161,11 @@ jobs:
           workspace: ${{ inputs.workspace }}
           backend_config_file: ${{ vars.TF_BACKEND_CONFIG_FILE }}
 
+      - name: Emit deployment evidence summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          echo "Workspace: ${{ inputs.workspace || 'dev' }}"
+          echo "Commit: $GITHUB_SHA"
+
