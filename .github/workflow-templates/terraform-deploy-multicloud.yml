@@ -1,0 +1,163 @@
+name: Terraform • Multi-Cloud Plan & Apply (FedRAMP Moderate-aligned)
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/actions/**"
+      - ".github/workflows/terraform-deploy-multicloud.yml"
+  workflow_dispatch:
+    inputs:
+      target_cloud:
+        description: "aws | azure | gcp"
+        required: true
+        default: "aws"
+        type: choice
+        options: [aws, azure, gcp]
+      workspace:
+        description: "Terraform workspace"
+        required: true
+        default: "dev"
+      tf_dir:
+        description: "Terraform directory"
+        required: true
+        default: "infra"
+      apply:
+        description: "true to apply (requires environment approval)"
+        required: true
+        default: "false"
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: tf-${{ inputs.target_cloud || 'aws' }}-${{ inputs.workspace || 'dev' }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_CLI_ARGS: "-no-color"
+
+jobs:
+  plan:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: SecurityUniversalOrg/ghe-actions/actions/checkout@v1
+      
+      - name: Verify pinned actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R "uses: .*@v" -n .github/workflows .github/actions; then
+            echo "ERROR: Found unpinned actions (tag refs). Pin to commit SHA."
+            exit 1
+          fi
+
+      # Cloud auth (choose one)
+      - name: Auth AWS (OIDC)
+        if: ${{ inputs.target_cloud == 'aws' }}
+        uses: SecurityUniversalOrg/ghe-actions/actions/cloud-auth-aws@v1
+        with:
+          aws_region: ${{ vars.AWS_REGION }}
+          role_to_assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+
+      - name: Auth Azure (OIDC)
+        if: ${{ inputs.target_cloud == 'azure' }}
+        uses: SecurityUniversalOrg/ghe-actions/actions/cloud-auth-azure@v1
+        with:
+          azure_client_id: ${{ vars.AZURE_CLIENT_ID }}
+          azure_tenant_id: ${{ vars.AZURE_TENANT_ID }}
+          azure_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Auth GCP (OIDC/WIF)
+        if: ${{ inputs.target_cloud == 'gcp' }}
+        uses: SecurityUniversalOrg/ghe-actions/actions/cloud-auth-gcp@v1
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Terraform fmt/validate
+        uses: SecurityUniversalOrg/ghe-actions/actions/terraform-fmt-validate@v1
+        with:
+          tf_dir: ${{ inputs.tf_dir }}
+
+      - name: Terraform plan (policy gated)
+        uses: SecurityUniversalOrg/ghe-actions/actions/terraform-plan@v1
+        with:
+          tf_dir: ${{ inputs.tf_dir }}
+          workspace: ${{ inputs.workspace }}
+          backend_config_file: ${{ vars.TF_BACKEND_CONFIG_FILE }}
+          var_file: ${{ vars.TF_VAR_FILE }}
+          run_tflint: "true"
+          run_checkov: "true"
+          checkov_soft_fail: "false"
+
+      - name: Upload plan artifact
+        uses: SecurityUniversalOrg/ghe-actions/actions/upload-artifact@v1
+        with:
+          name: tfplan-${{ inputs.target_cloud }}-${{ inputs.workspace }}-${{ github.run_id }}
+          path: |
+            ${{ inputs.tf_dir }}/tfplan.binary
+            ${{ inputs.tf_dir }}/tfplan.json
+          if-no-files-found: error
+          retention-days: 30
+
+  apply:
+    needs: [plan]
+    runs-on: self-hosted
+    timeout-minutes: 30
+
+    # Create and protect environments like:
+    # tf-apply-dev, tf-apply-prod, etc. (required reviewers)
+    environment:
+      name: tf-apply-${{ inputs.workspace }}
+
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.apply == 'true' }}
+
+    steps:
+      - name: Checkout
+        uses: SecurityUniversalOrg/ghe-actions/actions/checkout@v1
+
+      # Cloud auth (choose one)
+      - name: Auth AWS (OIDC)
+        if: ${{ inputs.target_cloud == 'aws' }}
+        uses: SecurityUniversalOrg/ghe-actions/actions/cloud-auth-aws@v1
+        with:
+          aws_region: ${{ vars.AWS_REGION }}
+          role_to_assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+
+      - name: Auth Azure (OIDC)
+        if: ${{ inputs.target_cloud == 'azure' }}
+        uses: SecurityUniversalOrg/ghe-actions/actions/cloud-auth-azure@v1
+        with:
+          azure_client_id: ${{ vars.AZURE_CLIENT_ID }}
+          azure_tenant_id: ${{ vars.AZURE_TENANT_ID }}
+          azure_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Auth GCP (OIDC/WIF)
+        if: ${{ inputs.target_cloud == 'gcp' }}
+        uses: SecurityUniversalOrg/ghe-actions/actions/cloud-auth-gcp@v1
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Download plan artifact
+        uses: SecurityUniversalOrg/ghe-actions/actions/download-artifact@v1
+        with:
+          name: tfplan-${{ inputs.target_cloud }}-${{ inputs.workspace }}-${{ github.run_id }}
+          path: ${{ inputs.tf_dir }}
+
+      - name: Terraform apply (saved plan)
+        uses: SecurityUniversalOrg/ghe-actions/actions/terraform-apply@v1
+        with:
+          tf_dir: ${{ inputs.tf_dir }}
+          workspace: ${{ inputs.workspace }}
+          backend_config_file: ${{ vars.TF_BACKEND_CONFIG_FILE }}
+
