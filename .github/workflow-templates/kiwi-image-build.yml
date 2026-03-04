@@ -1,0 +1,892 @@
+name: Build Cloud Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'kiwi/el/9/**'
+      - 'kiwi/el/common/**'
+      - 'kiwi/ubuntu/24/**'
+      - 'kiwi/ubuntu/common/**'
+      - 'kiwi/shared/**'
+      - '.github/workflows/kiwi-build-cloud-images.yml'
+    workflow_dispatch:
+      inputs:
+        distribution:
+          description: 'Distribution to build (el9, ubuntu24, ALL)'
+          required: true
+          default: 'el9'
+          type: choice
+          options: 
+            - el9
+            - ubuntu24
+            - ALL
+        cloud:
+          description: 'Target cloud (EC2, AZURE, GCE, ALL)'
+          required: true
+          default: 'EC2'
+          type: choice
+          options:
+            - EC2
+            - AZURE
+            - GCE
+            - ALL
+        el-os:
+          description: 'Target EL OS (el9, el8, ALL)'
+          required: true
+          default: 'rocky'
+          type: choice
+          options:
+            - rocky
+            - rhel
+            - oel
+            - ALL
+        runner-cloud:
+          description: 'Cloud to launch runner in'
+          required: true
+          default: 'EC2'
+          type: choice
+          options:
+            - EC2
+            - AZURE
+            - GCE
+            
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  CLOUDSDK_CONFIG: /tmp/gcloud-config
+  AZURE_CONFIG_DIR: /tmp/azure-config
+
+jobs:
+  # Determine what changed
+  detect-changes:
+    name: Detect Changed files
+    runs-on: ubuntu-latest
+    environment: nonprod # Require approval at workflow start, before starting runners
+    outputs:
+      # EL9 outputs
+      rocky-changed: ${{ steps.filter.outputs.rocky }}
+      rhel-changed: ${{ steps.filter.outputs.rhel }}
+      oel-changed: ${{ steps.filter.outputs.oel }}
+      el-common-changed: ${{ steps.filter.outputs.el-common }}
+      # Ubuntu outputs
+      ubuntu-changed: ${{ steps.filter.outputs.ubuntu }}
+      # Overall
+      build-el: ${{ steps.decide.outputs.build-el }}
+      build-ubuntu: ${{ steps.decide.outputs.build-ubuntu }}
+      el-runner-count: ${{ steps.decide.outputs.el-runner-count }}
+      cloud-name: ${{ steps.decide.outputs.cloud-name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed paths
+        id: filter
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          # Get list of changed files
+          if [ "${{ github.event_name}}" == "pull_request" ]; then
+            CHANGED_FILES=$(git diff --name-only ${{ github.pull_request.base.sha }} ${{ github.sha }})
+          else
+            CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
+          fi
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          # Check for Rocky-specific changes
+          if echo "$CHANGED_FILES" | grep -qE '^kiwi/el/9/.*/rocky/|^kiwi/el/9/rocky|^kiwi/el/9/repositories/rocky\.xml'; then
+            echo "rocky=true" >> $GITHUB_OUTPUT
+          else
+            echo "rocky=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Check for RHEL-specific changes
+          if echo "$CHANGED_FILES" | grep -qE '^kiwi/el/9/.*/rhel/|^kiwi/el/9/rhel|^kiwi/el/9/repositories/rhel\.xml'; then
+            echo "rhel=true" >> $GITHUB_OUTPUT
+          else
+            echo "rhel=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Check for OEL-specific changes
+          if echo "$CHANGED_FILES" | grep -qE '^kiwi/el/9/.*/oel/|^kiwi/el/9/oel|^kiwi/el/9/repositories/oel\.xml'; then
+            echo "oel=true" >> $GITHUB_OUTPUT
+          else
+            echo "oel=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Check for EL common changes (excluding OS-specific directories)
+          if echo "$CHANGED_FILES" | grep -qE '^kiwi/el/9/|^kiwi/el/common|^kiwi/shared/' | grep -vE 'rocky/|rhel/|oel/'; then
+            echo "el-common=true" >> $GITHUB_OUTPUT
+          else
+            echo "el-common=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Check for Ubuntu-specific changes
+          if echo "$CHANGED_FILES" | grep -qE '^kiwi/ubuntu/24|^kiwi/ubuntu/common|^kiwi/shared/'; then
+            echo "ubuntu=true" >> $GITHUB_OUTPUT
+          else
+            echo "ubuntu=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Decide what to build
+        id: decide
+        run: |
+          # Debug inputs
+          echo "Event: ${{ github.event_name }}"
+          echo "Distribution: '${{ inputs.distribution }}'"
+          echo "Cloud: '${{ inputs.cloud }}'"
+          echo "EL-OS: '${{ inputs.el-os }}'"
+          echo "Runner-cloud: '${{ inputs.runner-cloud }}'"
+
+          # Convert cloud name to lowercase
+          CLOUD="${{ inputs.runner-cloud || 'EC2' }}"
+          case $CLOUD in
+            EC2)
+              CLOUD_NAME="aws"
+              ;;
+            AZURE)
+              CLOUD_NAME="azure"
+              ;;
+            GCE)
+              CLOUD_NAME="gcp"
+              ;;
+            *)
+              CLOUD_NAME="aws" # Default fallback
+              ;;
+          esac
+          echo "cloud-name=$CLOUD_NAME" >> $GITHUB_OUTPUT
+
+          # Manual dispatch - use inputs
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            if [[ "${{ inputs.distribution }}" == "el9" || "${{ inputs.distribution }}" == "ALL" ]]; then
+              echo "build-el=true" >> $GITHUB_OUTPUT
+            else
+              echo "build-el=false" >> $GITHUB_OUTPUT
+            fi
+
+            if [[ "${{ inputs.distribution }}" == "ubuntu24" || "${{ inputs.distribution }}" == "ALL" ]]; then
+              echo "build-ubuntu=true" >> $GITHUB_OUTPUT
+            else
+              echo "build-ubuntu=false" >> $GITHUB_OUTPUT
+            fi
+
+            # Count EL builds needed
+            EL_COUNT=0
+            if [ "${{ inputs.el-os }}" == "rocky" || "${{ inputs.el-os }}" == "ALL" ]; then
+              EL_COUNT=$((EL_COUNT + 1))
+            fi
+            if [ "${{ inputs.el-os }}" == "rhel" || "${{ inputs.el-os }}" == "ALL" ]; then
+              EL_COUNT=$((EL_COUNT + 1))
+            fi
+            if [ "${{ inputs.el-os }}" == "oel" || "${{ inputs.el-os }}" == "ALL" ]; then
+              EL_COUNT=$((EL_COUNT + 1))
+            fi
+            echo "el-runner-count=$EL_COUNT" >> $GITHUB_OUTPUT
+          else
+            # Automatic trigger - check what changed
+            if [ "${{ steps.filter.outputs.rocky }}" == "true" ] || \
+               [ "${{ steps.filter.outputs.rhel }}" == "true" ] || \
+               [ "${{ steps.filter.outputs.oel }}" == "true" ] || \
+               [ "${{ steps.filter.outputs.el_common }}" == "true" ]; then
+              echo "build-el=true" >> $GITHUB_OUTPUT
+            else
+              echo "build-el=false" >> $GITHUB_OUTPUT
+            fi
+
+            if [ "${{ steps.filter.outputs.ubuntu }}" == "true" ]; then
+              echo "build-ubuntu=true" >> $GITHUB_OUTPUT
+            else
+              echo "build-ubuntu=false" >> $GITHUB_OUTPUT
+            fi
+
+            # Count EL builds needed for automatic triggers
+            EL_COUNT=0
+            if [ "${{ steps.filter.outputs.rocky }}" == "true" ] || [ "${{ steps.filter.outputs.el-common }}" == "true" ]; then
+              EL_COUNT=$((EL_COUNT + 1))
+            fi
+            if [ "${{ steps.filter.outputs.rhel }}" == "true" ] || [ "${{ steps.filter.outputs.el-common }}" == "true" ]; then
+              EL_COUNT=$((EL_COUNT + 1))
+            fi
+            if [ "${{ steps.filter.outputs.oel }}" == "true" ] || [ "${{ steps.filter.outputs.el-common }}" == "true" ]; then
+              EL_COUNT=$((EL_COUNT + 1))
+            fi
+            # Cap at 3 runners max
+            if [ $EL_COUNT -gt 3 ]; then
+              EL_COUNT=3
+            fi
+            echo "el-runner-count=$EL_COUNT" >> $GITHUB_OUTPUT
+          fi
+
+  # Start EL runners (dynamic count based on builds needed)
+  start-el-runner-1:
+    name: Start EL Build Runner 1
+    needs: [detect-changes]        
+    if: needs.detect-changes.outputs.build-el == 'true' && needs.detect-changes.outputs.el-runner-count >= '1'
+    uses: ./.github/workflows/runner-ephemeral.yml
+    with:
+      cloud: EC2
+      action: start
+      runner-name: kiwi-ghrunner-${{ needs.detect-changes.outputs.cloud-name }}01
+    secrets: inherit
+
+  start-el-runner-2:
+    name: Start EL Build Runner 2
+    needs: [detect-changes]        
+    if: needs.detect-changes.outputs.build-el == 'true' && needs.detect-changes.outputs.el-runner-count >= '2'
+    uses: ./.github/workflows/runner-ephemeral.yml
+    with:
+      cloud: EC2
+      action: start
+      runner-name: kiwi-ghrunner-${{ needs.detect-changes.outputs.cloud-name }}02
+    secrets: inherit
+
+  start-el-runner-3:
+    name: Start EL Build Runner 3
+    needs: [detect-changes]        
+    if: needs.detect-changes.outputs.build-el == 'true' && needs.detect-changes.outputs.el-runner-count >= '3'
+    uses: ./.github/workflows/runner-ephemeral.yml
+    with:
+      cloud: EC2
+      action: start
+      runner-name: kiwi-ghrunner-${{ needs.detect-changes.outputs.cloud-name }}03
+    secrets: inherit
+
+  # Start Ubuntu runner
+  start-ubuntu-runner:
+    name: Start Ubuntu Build Runner
+    needs: [detect-changes]        
+    if: needs.detect-changes.outputs.build-ubuntu == 'true'
+    uses: ./.github/workflows/runner-ephemeral.yml
+    with:
+      cloud: EC2
+      action: start
+    secrets: inherit
+
+  # Build Rocky 9 images
+  build-rocky:
+    name: Build Rocky Linux 9
+    needs: [detect-changes, start-el-runner-1, start-el-runner-2, start-el-runner-3]
+    if: |
+      always() &&
+      needs.detect-changes.outputs.build-el == 'true' && (
+        needs.detect-changes.outputs.rocky-changed == 'true' ||
+        needs.detect-changes.outputs.el-common-changed == 'true' ||
+        (github.event_name == 'workflow_dispatch' && (inputs.el-os == 'rocky' || inputs.el-os == 'ALL'))
+      )
+    runs-on: ["self-hosted", "linux", "kiwi", "el"]
+    timeout-minutes: 180
+
+    steps:
+      - name: Clean workspace
+        run: |
+          echo "Cleaning stale workspace to ensure fresh checkout..."
+          rm -rf "${GITHUB_WORKSPACE}"
+          mkdir -p "${GITHUB_WORKSPACE}"
+
+      - name: Checkout code
+        uses: actions/checkout@v2
+        
+      - name: Verify build tools
+        run: |
+          echo "=== Build Environment ==="
+          sudo kiwi-ng --version
+          qemu-img --version | head -1
+          aws --version
+          az version --output tsv | head -1
+          gcloud version --format='value(version)'
+          kubectl version --client -o yaml 2>/dev/null | grep gitVersion || echo "kubectl not configured"
+          echo ""
+          echo "=== Disk Space ==="
+          df -h /app /tmp
+
+      - name: Configure AWS credentials
+        if: inputs.cloud == 'EC2' || inputs.cloud == 'ALL' || inputs.cloud == ''
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          
+      - name: Azure Login
+        if: inputs.cloud == 'AZURE' || inputs.cloud == 'ALL'
+        uses: azure/login@v1
+        env:
+          AZURE_CONFIG_DIR: /tmp/azure-config
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      
+      - name: Authenticate to Google Cloud
+        if: inputs.cloud == 'GCE' || inputs.cloud == 'ALL'
+        run: |
+          mkdir -p "${CLOUDSDK_CONFIG}"
+
+          OIDC_TOKEN=$(curl -sLS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=//iam.googleapis.com/projects/843212618371/locations/global/workloadIdentityPools/iam-gcp--wip-hca-github-actions/providers/iam-oidc-hca-github-actions" | jq -r '.value')
+
+          cat > /tmp/gcp-cred-config.json <<EOF
+          {
+            "type": "external_account",
+            "audience": "//iam.googleapis.com/projects/843212618371/locations/global/workloadIdentityPools/iam-gcp--wip-hca-github-actions/providers/iam-oidc-hca-github-actions",
+            "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+            "token_url": "https://sts.googleapis.com/v1/token",
+            "credential_source": {
+              "file": "/tmp/gcp-cred-config.json"
+            },
+            "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${{ secrets.GCP_SERVICE_ACCOUNT }}:generateAccessToken?scope=https://www.googleapis.com/auth/cloud-platform"
+          }
+          EOF
+
+          echo "${OIDC_TOKEN}" > /tmp/gcp-oidc-token.txt
+          chmod 644 /tmp/gcp-oidc-token.txt
+          chmod 644 /tmp/gcp-cred-config.json
+
+          gcloud auth login --cred-file=/tmp/gcp-cred-config.json --quiet
+          gcloud config set project gcp-prj-ans-awx-prod-01
+
+          export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-cred-config.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-cred-config.json" >> $GITHUB_ENV
+
+          echo "Authenticated as: $(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null)"
+
+      - name: Set up secrets and configuration files
+        run: |
+          cd kiwi/el/9
+
+          mkdir -p root/root/.ssh
+          echo "${{ secrets.ROOT_PUB_KEY }}" > root/root/.ssh/authorized_keys
+          chmod 600 root/root/.ssh/authorized_keys
+
+          mkdir -p root/home/infraansi/.ssh
+          echo "${{ secrets.INFRAANSIED25519_PUB_KEY }}" > root/home/infraansi/.ssh/authorized_keys
+          echo "${{ secrets.INFRAANSIRSA_PUB_KEY }}" > root/home/infraansi/.ssh/authorized_keys
+          chmod 600 root/home/infraansi/.ssh/authorized_keys
+
+          mkdir -p root/home/infraansi
+          cat > root/home/infraansi/.atat <<EOF
+          ATAT_TOKEN="${{ secrets.ATAT_TOKEN }}"
+          ATAT_HOSTS="${{ secrets.ATAT_HOSTS }}"
+          EOF
+          chmod 600 root/home/infraansi/.atat
+
+      - name: Build Rocky 9 Images
+        run: |
+          cd kiwi/el/9
+          CLOUD="${{ inputs.cloud || 'ALL' }}"
+          sudo -E ./build.sh --cloud "$CLOUD" --os rocky -prod
+        env:
+          CS_CID: ${{ secrets.CROWDSTRIKE_CID }}
+          GITHUB_ACTIONS: true
+          AZURE_CONFIG_DIR: /tmp/azure-config
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v2
+        with:
+          name: rocky9-images-${{ github.run_number }}
+          path: |
+            /app/build/*/rocky9*.tar.gz
+            /app/build/*/rocky9*.vmdk
+            /app/build/*/rocky9*.vhd
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v2
+        with:
+          name: rocky9-build-logs-${{ github.run_number }}
+          path: |
+            /tmp/kiwi*.log
+            /var/log/kiwi*.log
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Graceful shutdown runner
+        if: always()
+        run: |
+          echo "Initiating graceful shutdown of runner in 1 minute..."
+          sudo shutdown -h +1 'GitHub Actions workflow completed - Rocky build finished'
+
+  # Build RHEL 9 images
+  build-rhel:
+    name: Build RHEL 9
+    needs: [detect-changes, start-el-runner-1, start-el-runner-2, start-el-runner-3]
+    if: |
+      always() &&
+      needs.detect-changes.outputs.build-el == 'true' && (
+        needs.detect-changes.outputs.rhel-changed == 'true' ||
+        needs.detect-changes.outputs.el-common-changed == 'true' ||
+        (github.event_name == 'workflow_dispatch' && (inputs.el-os == 'rhel' || inputs.el-os == 'ALL'))
+      )
+    runs-on: ["self-hosted", "linux", "kiwi", "el"]
+    timeout-minutes: 180
+
+    steps:
+      - name: Clean workspace
+        run: |
+          echo "Cleaning stale workspace to ensure fresh checkout..."
+          rm -rf "${GITHUB_WORKSPACE}"
+          mkdir -p "${GITHUB_WORKSPACE}"
+
+      - name: Checkout code
+        uses: actions/checkout@v2
+        
+      - name: Verify build tools
+        run: |
+          echo "=== Build Environment ==="
+          sudo kiwi-ng --version
+          qemu-img --version | head -1
+          aws --version
+          az version --output tsv | head -1
+          gcloud version --format='value(version)'
+          kubectl version --client -o yaml 2>/dev/null | grep gitVersion || echo "kubectl not configured"
+          echo ""
+          echo "=== Disk Space ==="
+          df -h /app /tmp
+
+      - name: Configure AWS credentials
+        if: inputs.cloud == 'EC2' || inputs.cloud == 'ALL' || inputs.cloud == ''
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Azure Login
+        if: inputs.cloud == 'AZURE' || inputs.cloud == 'ALL'
+        uses: azure/login@v1
+        env:
+          AZURE_CONFIG_DIR: /tmp/azure-config
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      
+      - name: Authenticate to Google Cloud
+        if: inputs.cloud == 'GCE' || inputs.cloud == 'ALL'
+        run: |
+          mkdir -p "${CLOUDSDK_CONFIG}"
+
+          OIDC_TOKEN=$(curl -sLS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=//iam.googleapis.com/projects/843212618371/locations/global/workloadIdentityPools/iam-gcp--wip-hca-github-actions/providers/iam-oidc-hca-github-actions" | jq -r '.value')
+
+          cat > /tmp/gcp-cred-config.json <<EOF
+          {
+            "type": "external_account",
+            "audience": "//iam.googleapis.com/projects/843212618371/locations/global/workloadIdentityPools/iam-gcp--wip-hca-github-actions/providers/iam-oidc-hca-github-actions",
+            "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+            "token_url": "https://sts.googleapis.com/v1/token",
+            "credential_source": {
+              "file": "/tmp/gcp-cred-config.json"
+            },
+            "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${{ secrets.GCP_SERVICE_ACCOUNT }}:generateAccessToken?scope=https://www.googleapis.com/auth/cloud-platform"
+          }
+          EOF
+
+          echo "${OIDC_TOKEN}" > /tmp/gcp-oidc-token.txt
+          chmod 644 /tmp/gcp-oidc-token.txt
+          chmod 644 /tmp/gcp-cred-config.json
+
+          gcloud auth login --cred-file=/tmp/gcp-cred-config.json --quiet
+          gcloud config set project gcp-prj-ans-awx-prod-01
+
+          export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-cred-config.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-cred-config.json" >> $GITHUB_ENV
+
+          echo "Authenticated as: $(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null)"
+
+      - name: Set up secrets and configuration files
+        run: |
+          cd kiwi/el/9
+
+          mkdir -p root/root/.ssh
+          echo "${{ secrets.ROOT_PUB_KEY }}" > root/root/.ssh/authorized_keys
+          chmod 600 root/root/.ssh/authorized_keys
+
+          mkdir -p root/home/infraansi/.ssh
+          echo "${{ secrets.INFRAANSIED25519_PUB_KEY }}" > root/home/infraansi/.ssh/authorized_keys
+          echo "${{ secrets.INFRAANSIRSA_PUB_KEY }}" > root/home/infraansi/.ssh/authorized_keys
+          chmod 600 root/home/infraansi/.ssh/authorized_keys
+
+          mkdir -p root/home/infraansi
+          cat > root/home/infraansi/.atat <<EOF
+          ATAT_TOKEN="${{ secrets.ATAT_TOKEN }}"
+          ATAT_HOSTS="${{ secrets.ATAT_HOSTS }}"
+          EOF
+          chmod 600 root/home/infraansi/.atat
+
+      - name: Build RHEL 9 Images
+        run: |
+          cd kiwi/el/9
+          CLOUD="${{ inputs.cloud || 'ALL' }}"
+          sudo -E ./build.sh --cloud "$CLOUD" --os rhel -prod
+        env:
+          CS_CID: ${{ secrets.CROWDSTRIKE_CID }}
+          GITHUB_ACTIONS: true
+          AZURE_CONFIG_DIR: /tmp/azure-config
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v2
+        with:
+          name: rhel9-images-${{ github.run_number }}
+          path: |
+            /app/build/*/rhel9*.tar.gz
+            /app/build/*/rhel9*.vmdk
+            /app/build/*/rhel9*.vhd
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v2
+        with:
+          name: rhel9-build-logs-${{ github.run_number }}
+          path: |
+            /tmp/kiwi*.log
+            /var/log/kiwi*.log
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Graceful shutdown runner
+        if: always()
+        run: |
+          echo "Initiating graceful shutdown of runner in 1 minute..."
+          sudo shutdown -h +1 'GitHub Actions workflow completed - RHEL build finished'
+
+  # Build OEL 9 images
+  build-oel:
+    name: Build Oracle Linux 9
+    needs: [detect-changes, start-el-runner-1, start-el-runner-2, start-el-runner-3]
+    if: |
+      always() &&
+      needs.detect-changes.outputs.build-el == 'true' && (
+        needs.detect-changes.outputs.oel-changed == 'true' ||
+        needs.detect-changes.outputs.el-common-changed == 'true' ||
+        (github.event_name == 'workflow_dispatch' && (inputs.el-os == 'oel' || inputs.el-os == 'ALL'))
+      )
+    runs-on: ["self-hosted", "linux", "kiwi", "el"]
+    timeout-minutes: 180
+
+    steps:
+      - name: Clean workspace
+        run: |
+          echo "Cleaning stale workspace to ensure fresh checkout..."
+          rm -rf "${GITHUB_WORKSPACE}"
+          mkdir -p "${GITHUB_WORKSPACE}"
+
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Verify build tools
+        run: |
+          echo "=== Build Environment ==="
+          sudo kiwi-ng --version
+          qemu-img --version | head -1
+          aws --version
+          az version --output tsv | head -1
+          gcloud version --format='value(version)'
+          kubectl version --client -o yaml 2>/dev/null | grep gitVersion || echo "kubectl not configured"
+          echo ""
+          echo "=== Disk Space ==="
+          df -h /app /tmp
+
+      - name: Configure AWS credentials
+        if: inputs.cloud == 'EC2' || inputs.cloud == 'ALL' || inputs.cloud == ''
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Azure Login
+        if: inputs.cloud == 'AZURE' || inputs.cloud == 'ALL'
+        uses: azure/login@v1
+        env:
+          AZURE_CONFIG_DIR: /tmp/azure-config
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      
+      - name: Authenticate to Google Cloud
+        if: inputs.cloud == 'GCE' || inputs.cloud == 'ALL'
+        run: |
+          mkdir -p "${CLOUDSDK_CONFIG}"
+
+          OIDC_TOKEN=$(curl -sLS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=//iam.googleapis.com/projects/843212618371/locations/global/workloadIdentityPools/iam-gcp--wip-hca-github-actions/providers/iam-oidc-hca-github-actions" | jq -r '.value')
+
+          cat > /tmp/gcp-cred-config.json <<EOF
+          {
+            "type": "external_account",
+            "audience": "//iam.googleapis.com/projects/843212618371/locations/global/workloadIdentityPools/iam-gcp--wip-hca-github-actions/providers/iam-oidc-hca-github-actions",
+            "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+            "token_url": "https://sts.googleapis.com/v1/token",
+            "credential_source": {
+              "file": "/tmp/gcp-cred-config.json"
+            },
+            "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${{ secrets.GCP_SERVICE_ACCOUNT }}:generateAccessToken?scope=https://www.googleapis.com/auth/cloud-platform"
+          }
+          EOF
+
+          echo "${OIDC_TOKEN}" > /tmp/gcp-oidc-token.txt
+          chmod 644 /tmp/gcp-oidc-token.txt
+          chmod 644 /tmp/gcp-cred-config.json
+
+          gcloud auth login --cred-file=/tmp/gcp-cred-config.json --quiet
+          gcloud config set project gcp-prj-ans-awx-prod-01
+
+          export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-cred-config.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-cred-config.json" >> $GITHUB_ENV
+
+          echo "Authenticated as: $(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null)"
+
+      - name: Set up secrets and configuration files
+        run: |
+          cd kiwi/el/9
+
+          mkdir -p root/root/.ssh
+          echo "${{ secrets.ROOT_PUB_KEY }}" > root/root/.ssh/authorized_keys
+          chmod 600 root/root/.ssh/authorized_keys
+
+          mkdir -p root/home/infraansi/.ssh
+          echo "${{ secrets.INFRAANSIED25519_PUB_KEY }}" > root/home/infraansi/.ssh/authorized_keys
+          echo "${{ secrets.INFRAANSIRSA_PUB_KEY }}" > root/home/infraansi/.ssh/authorized_keys
+          chmod 600 root/home/infraansi/.ssh/authorized_keys
+
+          mkdir -p root/home/infraansi
+          cat > root/home/infraansi/.atat <<EOF
+          ATAT_TOKEN="${{ secrets.ATAT_TOKEN }}"
+          ATAT_HOSTS="${{ secrets.ATAT_HOSTS }}"
+          EOF
+          chmod 600 root/home/infraansi/.atat
+
+      - name: Build OEL 9 Images
+        run: |
+          cd kiwi/el/9
+          CLOUD="${{ inputs.cloud || 'ALL' }}"
+          sudo -E ./build.sh --cloud "$CLOUD" --os oel -prod
+        env:
+          CS_CID: ${{ secrets.CROWDSTRIKE_CID }}
+          GITHUB_ACTIONS: true
+          AZURE_CONFIG_DIR: /tmp/azure-config
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v2
+        with:
+          name: oel9-images-${{ github.run_number }}
+          path: |
+            /app/build/*/oel9*.tar.gz
+            /app/build/*/oel9*.vmdk
+            /app/build/*/oel9*.vhd
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v2
+        with:
+          name: oel9-build-logs-${{ github.run_number }}
+          path: |
+            /tmp/kiwi*.log
+            /var/log/kiwi*.log
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Graceful shutdown runner
+        if: always()
+        run: |
+          echo "Initiating graceful shutdown of runner in 1 minute..."
+          sudo shutdown -h +1 'GitHub Actions workflow completed - OEL build finished'
+
+  # Build Ubuntu 24.04 images
+  build-ubuntu24:
+    name: Build Ubuntu 24.04
+    needs: [detect-changes, start-ubuntu-runner]
+    if: always() && needs.detect-changes.outputs.build-ubuntu == 'true'
+    runs-on: ["self-hosted", "linux", "kiwi", "ubuntu"]
+    timeout-minutes: 180
+
+    steps:
+      - name: Clean workspace
+        run: |
+          echo "Cleaning stale workspace to ensure fresh checkout..."
+          rm -rf "${GITHUB_WORKSPACE}"
+          mkdir -p "${GITHUB_WORKSPACE}"
+
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Verify build tools
+        run: |
+          echo "=== Build Environment ==="
+          sudo kiwi-ng --version
+          qemu-img --version | head -1
+          aws --version
+          az version --output tsv | head -1
+          gcloud version --format='value(version)'
+          kubectl version --client -o yaml 2>/dev/null | grep gitVersion || echo "kubectl not configured"
+          echo ""
+          echo "=== Disk Space ==="
+          df -h /app /tmp
+
+      - name: Configure AWS credentials
+        if: inputs.cloud == 'EC2' || inputs.cloud == 'ALL' || inputs.cloud == ''
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Azure Login
+        if: inputs.cloud == 'AZURE' || inputs.cloud == 'ALL'
+        uses: azure/login@v1
+        env:
+          AZURE_CONFIG_DIR: /tmp/azure-config
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      
+      - name: Authenticate to Google Cloud
+        if: inputs.cloud == 'GCE' || inputs.cloud == 'ALL'
+        run: |
+          mkdir -p "${CLOUDSDK_CONFIG}"
+
+          OIDC_TOKEN=$(curl -sLS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=//iam.googleapis.com/projects/843212618371/locations/global/workloadIdentityPools/iam-gcp--wip-hca-github-actions/providers/iam-oidc-hca-github-actions" | jq -r '.value')
+
+          cat > /tmp/gcp-cred-config.json <<EOF
+          {
+            "type": "external_account",
+            "audience": "//iam.googleapis.com/projects/843212618371/locations/global/workloadIdentityPools/iam-gcp--wip-hca-github-actions/providers/iam-oidc-hca-github-actions",
+            "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+            "token_url": "https://sts.googleapis.com/v1/token",
+            "credential_source": {
+              "file": "/tmp/gcp-cred-config.json"
+            },
+            "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${{ secrets.GCP_SERVICE_ACCOUNT }}:generateAccessToken?scope=https://www.googleapis.com/auth/cloud-platform"
+          }
+          EOF
+
+          echo "${OIDC_TOKEN}" > /tmp/gcp-oidc-token.txt
+          chmod 644 /tmp/gcp-oidc-token.txt
+          chmod 644 /tmp/gcp-cred-config.json
+
+          gcloud auth login --cred-file=/tmp/gcp-cred-config.json --quiet
+          gcloud config set project gcp-prj-ans-awx-prod-01
+
+          export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-cred-config.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-cred-config.json" >> $GITHUB_ENV
+
+          echo "Authenticated as: $(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null)"
+
+      - name: Set up secrets and configuration files
+        run: |
+          cd kiwi/el/9
+
+          mkdir -p root/root/.ssh
+          echo "${{ secrets.ROOT_PUB_KEY }}" > root/root/.ssh/authorized_keys
+          chmod 600 root/root/.ssh/authorized_keys
+
+          mkdir -p root/home/infraansi/.ssh
+          echo "${{ secrets.INFRAANSIED25519_PUB_KEY }}" > root/home/infraansi/.ssh/authorized_keys
+          echo "${{ secrets.INFRAANSIRSA_PUB_KEY }}" > root/home/infraansi/.ssh/authorized_keys
+          chmod 600 root/home/infraansi/.ssh/authorized_keys
+
+          mkdir -p root/home/infraansi
+          cat > root/home/infraansi/.atat <<EOF
+          ATAT_TOKEN="${{ secrets.ATAT_TOKEN }}"
+          ATAT_HOSTS="${{ secrets.ATAT_HOSTS }}"
+          EOF
+          chmod 600 root/home/infraansi/.atat
+
+      - name: Build Ubuntu 24.04 Images
+        run: |
+          cd kiwi/ubuntu/24
+          CLOUD="${{ inputs.cloud || 'ALL' }}"
+          sudo -E ./build.sh --cloud "$CLOUD" --prod
+        env:
+          CS_CID: ${{ secrets.CROWDSTRIKE_CID }}
+          GITHUB_ACTIONS: true
+          AZURE_CONFIG_DIR: /tmp/azure-config
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v2
+        with:
+          name: ubuntu24-images-${{ github.run_number }}
+          path: |
+            /app/build/*/ubuntu24*.tar.gz
+            /app/build/*/ubuntu24*.vmdk
+            /app/build/*/ubuntu24*.vhd
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v2
+        with:
+          name: ubuntu24-build-logs-${{ github.run_number }}
+          path: |
+            /tmp/kiwi*.log
+            /var/log/kiwi*.log
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Graceful shutdown runner
+        if: always()
+        run: |
+          echo "Initiating graceful shutdown of runner in 1 minute..."
+          sudo shutdown -h +1 'GitHub Actions workflow completed - Ubuntu build finished'
+
+  # Stop EL runner
+  stop-el-runner-1:
+    name: Stop EL Build Runner 1
+    needs: [start-el-runner-1, build-rocky, build-rhel, build-oel]
+    if: always() && needs.start-el-runner-1.result == 'success'
+    uses: ./.github/workflows/runner-ephemeral.yml
+    with:
+      cloud: ${{ inputs.runner-cloud || 'EC2' }}
+      action: stop
+      runner-name: ${{ needs.start-el-runner-1.outputs.runner-name }}
+    secrets: inherit
+
+  stop-el-runner-2:
+    name: Stop EL Build Runner 2
+    needs: [start-el-runner-2, build-rocky, build-rhel, build-oel]
+    if: always() && needs.start-el-runner-2.result == 'success'
+    uses: ./.github/workflows/runner-ephemeral.yml
+    with:
+      cloud: ${{ inputs.runner-cloud || 'EC2' }}
+      action: stop
+      runner-name: ${{ needs.start-el-runner-2.outputs.runner-name }}
+    secrets: inherit
+
+  stop-el-runner-3:
+    name: Stop EL Build Runner 3
+    needs: [start-el-runner-3, build-rocky, build-rhel, build-oel]
+    if: always() && needs.start-el-runner-3.result == 'success'
+    uses: ./.github/workflows/runner-ephemeral.yml
+    with:
+      cloud: ${{ inputs.runner-cloud || 'EC2' }}
+      action: stop
+      runner-name: ${{ needs.start-el-runner-3.outputs.runner-name }}
+    secrets: inherit
+
+  # Stop Ubuntu runner
+  stop-ubuntu-runner:
+    name: Stop Ubuntu Build Runner
+    needs: [start-ubuntu-runner, build-ubuntu24]
+    if: always() && needs.start-ubuntu-runner.result == 'success'
+    uses: ./.github/workflows/runner-ephemeral.yml
+    with:
+      cloud: ${{ inputs.runner-cloud || 'EC2' }}
+      action: stop
+      runner-name: ${{ needs.start-ubuntu-runner.outputs.runner-name }}
+    secrets: inherit

@@ -1,0 +1,238 @@
+name: Manage GitHub Runner Power State
+
+on:
+  workflow_call:
+    inputs:
+      cloud:
+        description: 'Cloud provider to use (EC2, AZURE, GCE)'
+        required: true
+        type: string
+      action:
+        description: 'Action to perform (start, stop)'
+        required: true
+        type: string
+      runner-name:
+        description: 'Runner instance name (defaults based on cloud)'
+        required: true
+        type: string
+        default: ''
+    outputs:
+      runner-name:
+        description: 'Name of the runner instance'
+        value: ${{ jobs.manage-runner.outputs.runner-name }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  manage-runner:
+    name: ${{ inputs.action == 'start' && 'Start' || 'Stop' }} Runner on ${{ inputs.cloud }}
+    runs-on: ubuntu-latest
+    outputs:
+      runner-name: ${{ steps.set-runner-name.outputs.runner-name }}
+    
+    steps:
+      - name: Set runner name
+        id: set-runner-name
+        run: |
+          # Use provided name or default based on cloud
+          if [ -n "${{ inputs.runner-name }}" ]; then
+            RUNNER_NAME="${{ inputs.runner-name }}"
+          else
+            # Default runner names based on cloud
+            case "${{ inputs.cloud }}" in
+              EC2) 
+                RUNNER_NAME="ec2-runner" 
+                ;;
+              AZURE) 
+                RUNNER_NAME="azure-runner" 
+                ;;
+              GCE) 
+                RUNNER_NAME="gce-runner" 
+                ;;
+              *) 
+                echo "Unknown cloud: ${{ inputs.cloud }}" >&2; 
+                exit 1 
+                ;;
+            esac
+          fi
+          echo "runner-name=$RUNNER_NAME" >> $GITHUB_OUTPUT
+          echo "Using runner: ${RUNNER_NAME}"
+
+      - name: Configure AWS credentials
+        if: inputs.cloud == 'EC2'
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Azure Login
+        if: inputs.cloud == 'AZURE'
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Authenticate to Google Cloud
+        if: inputs.cloud == 'GCE'
+        run: |
+          # Create credentials file from secret
+          echo "${{ secrets.GCP_CREDENTIALS }}" > /tmp/gcp-key.json
+
+          # Activate service account
+          gcloud auth activate-service-account --key-file=/tmp/gcp-key.json
+
+          # Set project (extract from credentials JSON)
+          PROJECT_ID=$(jq -r '.project_id' /tmp/gcp-key.json)
+          gcloud config set project "$PROJECT_ID"
+
+          # Clean up credentials file
+          rm -f /tmp/gcp-key.json
+
+      - name: Start Runner (AWS)
+        if: inputs.cloud == 'EC2' && inputs.action == 'start'
+        run: |
+          RUNNER_PREFIX="${{ steps.set-runner-name.outputs.runner-name }}"
+
+          # Find ALL instances matching the runner prefix (kiwi-ghrunner-aws")
+          echo "Looking for runner instances matching: ${RUNNER_PREFIX}*"
+
+          INSTANCES=$(aws ec2 describe-instances \
+            --region us-east-2 \
+            --filters "Name=tag:Name,Values=${RUNNER_PREFIX}*" \
+            --query "Reservations[].Instances[].[InstanceId,State.Name,Tags[?Key=='Name'].Value|[0]]" \
+            --output text)
+
+          if [ -z "$INSTANCES" ]; then
+            echo "ERROR: No instances found matching: ${RUNNER_PREFIX}"
+            echo "Please create runner VMs first using kiwi/ghrunners/create-ghr.sh"
+            exit 1
+          fi
+
+          echo "Found runner instances:"
+          echo "$INSTANCES"
+          echo ""
+
+          STARTED_COUNT=0
+          ALREADY_RUNNING_COUNT=0
+          INSTANCE_IDS=""
+
+          while read -r INSTANCE_ID, INSTANCE_STATE, INSTANCE_NAME; do
+            [ -z "$INSTANCE_ID" ] && continue
+
+            echo "Processing: $INSTANCE_NAME ($INSTANCE_ID) - State: $INSTANCE_ST
+            
+            case "$INSTANCE_STATE" in
+              running)
+                echo "Already running"
+                STARTED_COUNT=$((STARTED_COUNT + 1))
+                ALREADY_RUNNING_COUNT=$((ALREADY_RUNNING_COUNT + 1))
+                ;;
+              pending)
+                echo "Starting up"
+                INSTANCE_IDS="$INSTANCE_IDS $INSTANCE_ID"
+                STARTED_COUNT=$((STARTED_COUNT + 1))
+                ;;
+              stopped)
+                echo "Starting instance..."
+                aws ec2 start-instances --region us-east-2nstance-ids "$INSTANCE_ID" > /dev/null
+                INSTANCE_IDS="$INSTANCE_IDS $INSTANCE_ID"
+                STARTED_COUNT=$((STARTED_COUNT + 1))
+                ;;
+              stopping|shutting-down)
+                echo "Skipping - instance is $INSTANCE_STATE (will be available later)"
+                ;;
+              *)
+                echo "Skipping - unexpected state: $INSTANCE_STATE"
+                ;;
+            esac
+          done <<< "$INSTANCES"
+
+          if [ $STARTED_COUNT -eq 0 ]; then
+            echo "ERROR: No instances were started. Please check instance states and try again."
+            exit 1
+          fi
+
+          # Wait for any instances we started
+          if [ -n "$INSTANCE_IDS" ]; then
+            echo ""
+            echo "Waiting for instances to be running..."
+            aws ec2 wait instance-running --region us-east-2 --instance-ids $INSTANCE_IDS
+            echo "All instances are now running."
+
+            # Wait additional time for runner services to initialize (only for newly started instances)
+            echo "Waiting for runner services to initialize (2 minutes)..."
+            sleep 120
+            echo "$STARTED_COUNT runner instance(s) are now running and should be ready for use."
+          elif [ $ALREADY_RUNNING_COUNT -gt 0 ]; then
+            echo "$ALREADY_RUNNING_COUNT runner instance(s) were already running."
+          fi
+
+      - name: Start Runner (Azure)
+        if: inputs.action == 'start' && inputs.cloud == 'AZURE'
+        run: |
+          RUNNER_NAME="${{ steps.set-runner-name.outputs.runner-name }}"
+
+          echo "Checking Azure VM status: ${RUNNER_NAME}"
+          VM_STATE=$(az vm get-instance-view \
+            --resource-group myResourceGroup \
+            --name "${RUNNER_NAME}" \
+            --query "statuses[?starts_with(code, 'PowerState/')].code" \
+            -o tsv 2>/dev/null || echo "unknown")
+
+          echo "Current state: $VM_STATE"
+
+          if [[ "$VM_STATE" == *"running"* ]]; then
+            echo "VM is already running."
+          else
+            echo "Starting Azure VM: ${RUNNER_NAME}"
+            az vm start \
+              --resource-group myResourceGroup \
+              --name "${RUNNER_NAME}"
+
+            # Wait for runner service to initialize (only for newly started VMs)
+            echo "Waiting for runner services to initialize (2 minutes)..."
+            sleep 120
+            echo "VM started and runner service should be ready"
+          fi
+
+      - name: Stop Runner (AWS)
+        if: inputs.action == 'stop' && inputs.cloud == 'EC2'
+        run: |
+          RUNNER_PREFIX="${{ steps.set-runner-name.outputs.runner-prefix }}"
+          
+          # Find All running instances matching the runner prefix
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=${RUNNER_PREFIX}*" \
+            --query "Reservations[].Instances[?State.Name=='running'].InstanceId" \
+            --output text)
+
+          if [ -n "$INSTANCE_ID" ]; then
+            aws ec2 stop-instances --instance-ids $INSTANCE_ID
+            echo "Stopped instance(s): $INSTANCE_ID"
+          else
+            echo "No instances found with prefix: ${RUNNER_PREFIX}"
+          fi
+
+      - name: Stop Runner (Azure)
+        if: inputs.action == 'stop' && inputs.cloud == 'AZURE'
+        run: |
+          RUNNER_NAME="${{ steps.set-runner-name.outputs.runner-name }}"
+
+          echo "Checking Azure VM status: ${RUNNER_NAME}"
+          VM_STATE=$(az vm get-instance-view \
+            --resource-group myResourceGroup \
+            --name "${RUNNER_NAME}" \
+            --query "statuses[?starts_with(code, 'PowerState/')].code" \
+            -o tsv 2>/dev/null || echo "unknown")
+
+          echo "Current state: $VM_STATE"
+
+          if [[ "$VM_STATE" == *"running"* ]]; then
+            echo "Stopping Azure VM: ${RUNNER_NAME}"
+            az vm stop \
+              --resource-group myResourceGroup \
+              --name "${RUNNER_NAME}"
+          else
+            echo "VM is not running."
+          fi

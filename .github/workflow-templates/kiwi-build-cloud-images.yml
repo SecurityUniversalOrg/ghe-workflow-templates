@@ -1,0 +1,205 @@
+name: Build Cloud Images (FedRAMP High)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'kiwi/el/9/**'
+      - 'kiwi/el/common/**'
+      - 'kiwi/ubuntu/24/**'
+      - 'kiwi/ubuntu/common/**'
+      - 'kiwi/shared/**'
+      - '.github/workflows/kiwi-build-cloud-images.yml'
+  workflow_dispatch:
+    inputs:
+      distribution:
+        description: 'Distribution to build (el9, ubuntu24, ALL)'
+        required: true
+        default: 'el9'
+        type: choice
+        options: [el9, ubuntu24, ALL]
+      cloud:
+        description: 'Target cloud (EC2, AZURE, GCE, ALL)'
+        required: true
+        default: 'EC2'
+        type: choice
+        options: [EC2, AZURE, GCE, ALL]
+      el-os:
+        description: 'Target EL OS (rocky, rhel, oel, ALL)'
+        required: true
+        default: 'rocky'
+        type: choice
+        options: [rocky, rhel, oel, ALL]
+
+# FedRAMP-ish: least privilege by default; grant only what you need.
+permissions:
+  contents: read
+  id-token: write  # required for OIDC to cloud providers
+  actions: read
+
+# Avoid parallel overlapping builds on the same branch / same workflow
+concurrency:
+  group: kiwi-image-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CLOUDSDK_CONFIG: /tmp/gcloud-config
+  AZURE_CONFIG_DIR: /tmp/azure-config
+
+jobs:
+  detect:
+    name: Detect changes / decide builds
+    # ARC label example: a small, non-privileged runner scale set
+    runs-on: ["self-hosted", "linux", "arc", "general"]
+    environment: nonprod  # keep your “approval before spending money” gate
+    outputs:
+      rocky_changed: ${{ steps.detect.outputs.rocky_changed }}
+      rhel_changed:  ${{ steps.detect.outputs.rhel_changed }}
+      oel_changed:   ${{ steps.detect.outputs.oel_changed }}
+      el_common_changed: ${{ steps.detect.outputs.el_common_changed }}
+      ubuntu_changed: ${{ steps.detect.outputs.ubuntu_changed }}
+      build_el: ${{ steps.detect.outputs.build_el }}
+      build_ubuntu: ${{ steps.detect.outputs.build_ubuntu }}
+      cloud_name: ${{ steps.detect.outputs.cloud_name }}
+      cloud: ${{ steps.detect.outputs.cloud }}
+      el_os: ${{ steps.detect.outputs.el_os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: detect
+        uses: ./.github/actions/kiwi-detect-changes
+        with:
+          event_name: ${{ github.event_name }}
+          distribution: ${{ inputs.distribution }}
+          cloud: ${{ inputs.cloud }}
+          el_os: ${{ inputs.el-os }}
+          before: ${{ github.event.before }}
+          sha: ${{ github.sha }}
+          # if you later add PR triggers, pass base/head shas too
+
+  build_el:
+    name: Build EL images (Rocky/RHEL/OEL)
+    needs: [detect]
+    if: needs.detect.outputs.build_el == 'true'
+    # ARC label example: dedicated “kiwi EL build” scale set with required tooling/privileges
+    runs-on: ["self-hosted", "linux", "arc", "kiwi", "el"]
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [rocky, rhel, oel]
+        include:
+          - os: rocky
+            changed_key: rocky_changed
+          - os: rhel
+            changed_key: rhel_changed
+          - os: oel
+            changed_key: oel_changed
+    environment: prod-image-build # recommended: separate gated environment for “prod images”
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify build tools
+        uses: ./.github/actions/kiwi-verify-tools
+
+      - name: Cloud auth (OIDC)
+        uses: ./.github/actions/kiwi-cloud-auth
+        with:
+          cloud: ${{ needs.detect.outputs.cloud }}
+          aws_region: ${{ vars.AWS_REGION }}
+          aws_role_to_assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          azure_client_id: ${{ vars.AZURE_CLIENT_ID }}
+          azure_tenant_id: ${{ vars.AZURE_TENANT_ID }}
+          azure_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+          gcp_workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          gcp_service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup build-time secrets/files
+        uses: ./.github/actions/kiwi-setup-build-secrets
+        with:
+          flavor: el9
+          root_pub_key: ${{ secrets.ROOT_PUB_KEY }}
+          infraansied25519_pub_key: ${{ secrets.INFRAANSIED25519_PUB_KEY }}
+          infraansirsa_pub_key: ${{ secrets.INFRAANSIRSA_PUB_KEY }}
+          atat_token: ${{ secrets.ATAT_TOKEN }}
+          atat_hosts: ${{ secrets.ATAT_HOSTS }}
+
+      - name: Build ${{ matrix.os }} 9
+        if: >
+          (needs.detect.outputs[matrix.changed_key] == 'true') ||
+          (needs.detect.outputs.el_common_changed == 'true') ||
+          (github.event_name == 'workflow_dispatch' && (needs.detect.outputs.el_os == matrix.os || needs.detect.outputs.el_os == 'ALL'))
+        uses: ./.github/actions/kiwi-build
+        with:
+          distro: el9
+          os: ${{ matrix.os }}
+          cloud: ${{ needs.detect.outputs.cloud }}
+          prod_flag: "true"
+        env:
+          CS_CID: ${{ secrets.CROWDSTRIKE_CID }}
+
+      - name: Upload artifacts/logs
+        if: always()
+        uses: ./.github/actions/kiwi-upload-artifacts
+        with:
+          image_prefix: "${{ matrix.os }}9"
+          run_number: "${{ github.run_number }}"
+
+  build_ubuntu:
+    name: Build Ubuntu 24.04 images
+    needs: [detect]
+    if: needs.detect.outputs.build_ubuntu == 'true'
+    runs-on: ["self-hosted", "linux", "arc", "kiwi", "ubuntu"]
+    timeout-minutes: 180
+    environment: prod-image-build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify build tools
+        uses: ./.github/actions/kiwi-verify-tools
+
+      - name: Cloud auth (OIDC)
+        uses: ./.github/actions/kiwi-cloud-auth
+        with:
+          cloud: ${{ needs.detect.outputs.cloud }}
+          aws_region: ${{ vars.AWS_REGION }}
+          aws_role_to_assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          azure_client_id: ${{ vars.AZURE_CLIENT_ID }}
+          azure_tenant_id: ${{ vars.AZURE_TENANT_ID }}
+          azure_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+          gcp_workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          gcp_service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup build-time secrets/files
+        uses: ./.github/actions/kiwi-setup-build-secrets
+        with:
+          flavor: ubuntu24
+          root_pub_key: ${{ secrets.ROOT_PUB_KEY }}
+          infraansied25519_pub_key: ${{ secrets.INFRAANSIED25519_PUB_KEY }}
+          infraansirsa_pub_key: ${{ secrets.INFRAANSIRSA_PUB_KEY }}
+          atat_token: ${{ secrets.ATAT_TOKEN }}
+          atat_hosts: ${{ secrets.ATAT_HOSTS }}
+
+      - name: Build Ubuntu 24.04
+        if: always()
+        uses: ./.github/actions/kiwi-build
+        with:
+          distro: ubuntu24
+          os: ubuntu24
+          cloud: ${{ needs.detect.outputs.cloud }}
+          prod_flag: "true"
+        env:
+          CS_CID: ${{ secrets.CROWDSTRIKE_CID }}
+
+      - name: Upload artifacts/logs
+        if: always()
+        uses: ./.github/actions/kiwi-upload-artifacts
+        with:
+          image_prefix: "ubuntu24"
+          run_number: "${{ github.run_number }}"
