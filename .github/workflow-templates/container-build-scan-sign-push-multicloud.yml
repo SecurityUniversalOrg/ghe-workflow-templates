@@ -1,0 +1,253 @@
+---
+name: Build • Scan • Sign • Publish (ACR)
+
+on:
+  workflow_dispatch:
+    inputs:
+      subset:
+        description: >
+          Comma-separated image names to build (optional; must match names
+          in matrix.yaml)
+        required: false
+        type: string
+        default: ""
+      repo:
+        description: >
+          Target registry repo prefix, e.g. myregistry.azurecr.io/kaiserbros
+          (leave blank to auto-resolve)
+        required: false
+        type: string
+        default: ""
+      registry_provider:
+        description: >
+          Target registry provider
+        required: true
+        type: choice
+        default: "azure"
+        options: [azure, aws]
+      aws_region:
+        description: >
+          AWS region for ECR (only used if provider=aws)
+        required: false
+        type: string
+        default: "us-gov-west-1"  # or us-east-1 etc.
+  repository_dispatch:
+    types:
+      - base-images-updated
+
+permissions:
+  contents: read
+  id-token: write
+  packages: read
+
+env:
+  COSIGN_YES: "true"
+
+jobs:
+  prepare:
+    runs-on: federal
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      repo: ${{ steps.repo.outputs.repo }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Resolve repo prefix (ACR or ECR)
+        id: repo
+        uses: SecurityUniversalOrg/ghe-actions/actions/docker-resolve-registry-repo-prefix@v1
+        with:
+          repo: ${{ inputs.repo }}
+          registry_provider: ${{ inputs.registry_provider }}
+          aws_region: ${{ inputs.aws_region }}
+
+      - name: Determine matrix subset
+        id: determinesubset
+        uses: SecurityUniversalOrg/ghe-actions/actions/docker-determine-matrix-subset@v1
+        with:
+          subset: ${{ inputs.subset }}
+
+      - name: Build matrix (optionally filter by subset)
+        id: matrix
+        uses: SecurityUniversalOrg/ghe-actions/actions/docker-create-image-matrix@v1
+        with:
+          subset: ${{ steps.determinesubset.outputs.subset }}
+
+  build:
+    needs: prepare
+    runs-on: federal
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    outputs:
+      old_tag: ${{ steps.oldtag.outputs.old_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Azure auth (OIDC) + ACR login ---
+      # Requires repo/org secrets or vars:
+      #   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+      # And either:
+      #   vars.ACR_NAME (recommended), e.g. "myregistry"
+      # or derive from needs.prepare.outputs.repo if it begins with "<name>.azurecr.io/..."
+      - name: Azure login (OIDC)
+        if: ${{ inputs.registry_provider == 'azure' }}
+        uses: SecurityUniversalOrg/ghe-actions/actions/cloud-auth-azure@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to ACR
+        if: ${{ inputs.registry_provider == 'azure' }}
+        uses: SecurityUniversalOrg/ghe-actions/actions/cloud-auth-azure-acr@v1
+        with:
+          repo_prefix: ${{ needs.prepare.outputs.repo }}
+
+      # --- AWS auth (OIDC) + ECR login ---
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ inputs.registry_provider == 'aws' }}
+        uses: SecurityUniversalOrg/ghe-actions/actions/cloud-auth-aws@v1
+        with:
+          role-to-assume: ${{ secrets.AWS_GHA_OIDC_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Login to Amazon ECR
+        if: ${{ inputs.registry_provider == 'aws' }}
+        uses: SecurityUniversalOrg/ghe-actions/actions/cloud-auth-aws-ecr@v1
+
+      - name: Get old image tag
+        id: oldtag
+        uses: SecurityUniversalOrg/ghe-actions/actions/get-old-tag@v1
+        with:
+          image: ${{ needs.prepare.outputs.repo }}/${{ matrix.name }}
+
+      - name: Compute new image tag
+        id: tagcalc
+        uses: SecurityUniversalOrg/ghe-actions/actions/get-new-docker-tag@v1
+        with:
+          image_repo: ${{ needs.prepare.outputs.repo }}/${{ matrix.name }}
+          candidate_tag: ${{ matrix.tags[0] }}
+
+      - name: Build to local daemon (single-arch)
+        id: build
+        uses: SecurityUniversalOrg/ghe-actions/actions/docker-build-to-daemon@v1
+        with:
+          docker_repo: ${{ needs.prepare.outputs.repo }}
+          image: ${{ matrix.name }}
+          tag_primary: ${{ steps.tagcalc.outputs.new_tag }}
+          tag_secondary: ${{ matrix.tags[1] }}
+          dockerfile_path: ${{ matrix.path }}
+
+      - name: Trivy vulnerability scanner CVE gate
+        id: secscan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: '${{ needs.prepare.outputs.repo }}/${{ matrix.name }}:${{ steps.tagcalc.outputs.new_tag }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL'
+          trivyignores: '.trivyignore'
+          trivy-config: '.trivy-config.yaml'
+        env:
+          TRIVY_TIMEOUT: 60m
+          TRIVY_CACHE_DIR: ${{ github.workspace }}/.cache/trivy
+
+      - name: Promote and push image (ACR)
+        id: promote
+        uses: SecurityUniversalOrg/ghe-actions/actions/docker-push-image@v1
+        with:
+          primary_ref: ${{ needs.prepare.outputs.repo }}/${{ matrix.name }}:${{ steps.tagcalc.outputs.new_tag }}
+          secondary_ref: ${{ needs.prepare.outputs.repo }}/${{ matrix.name }}:${{ matrix.tags[1] }}
+
+      - name: Resolve digest for primary tag
+        id: digest
+        uses: SecurityUniversalOrg/ghe-actions/actions/find-digest-for-primary-tag@v1
+        with:
+          primary_ref: ${{ needs.prepare.outputs.repo }}/${{ matrix.name }}:${{ steps.tagcalc.outputs.new_tag }}
+
+      - name: Sign image (keyless, by digest)
+        id: sign-image
+        uses: SecurityUniversalOrg/ghe-actions/actions/docker-sign-image@v1
+        with:
+          primary_ref: ${{ steps.digest.outputs.full_ref }}
+
+      - name: Generate SBOM (SPDX JSON)
+        id: sbom
+        uses: SecurityUniversalOrg/ghe-actions/actions/docker-generate-sbom@v1
+        with:
+          primary_ref: ${{ steps.digest.outputs.full_ref }}
+
+      - name: Attach SBOM attestation
+        id: sbom-attach
+        uses: SecurityUniversalOrg/ghe-actions/actions/docker-attach-sbom@v1
+        with:
+          primary_ref: ${{ steps.digest.outputs.full_ref }}
+          matrix_name: ${{ matrix.name }}
+
+      - name: Emit update record
+        if: ${{ success() }}
+        id: update-emit
+        uses: SecurityUniversalOrg/ghe-actions/actions/docker-emit-update-record@v1
+        with:
+          primary_ref: ${{ steps.tagcalc.outputs.new_tag }}
+          matrix_name: ${{ matrix.name }}
+
+      - name: Determine dependent layers
+        id: determine-dependents
+        uses: SecurityUniversalOrg/ghe-actions/actions/docker-find-dependent-layers@v1
+        with:
+          roots: ${{ matrix.name }}
+
+      - name: Notify dependent layers
+        id: notify-dependents
+        uses: SecurityUniversalOrg/ghe-actions/actions/docker-notify-dependent-layers@v1
+        with:
+          gh_token: ${{ secrets.REPO_DISPATCH_TOKEN }}
+          subset_json: ${{ steps.determine-dependents.outputs.subset }}
+          matrix_name: ${{ matrix.name }}
+          old_tag: ${{ steps.oldtag.outputs.old_tag }}
+          new_tag: ${{ steps.tagcalc.outputs.new_tag }}
+
+  update-matrix:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Download all update artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: updates-*
+          merge-multiple: true
+          path: updatesx
+
+      - name: Apply all updates to matrix.yaml
+        id: apply-updates
+        uses: SecurityUniversalOrg/ghe-actions/actions/docker-apply-updates-to-matrix@v1
+
+      - name: Commit & open PR (one PR for all)
+        id: open-pr
+        uses: SecurityUniversalOrg/ghe-actions/actions/gh-open-pr@v1
+        with:
+          gh_token: ${{ secrets.DEPENDENT_REPO_RW_TOKEN }}
+          feature_branch: "chore/matrix-bump"
+          user_name: "github-actions[bot]"
+          user_email: "41898282+github-actions[bot]@users.noreply.github.com"
+          commit_msg: "chore(matrix): bump primary tags after successful builds"
+          pr_title: "Update matrix: bump primary tags"
+          pr_msg: "Automated bump of primary tags for images built successfully."
+
+  summarize:
+    needs: [prepare, build]
+    runs-on: federal
+    steps:
+      - run: echo "Builds complete."
