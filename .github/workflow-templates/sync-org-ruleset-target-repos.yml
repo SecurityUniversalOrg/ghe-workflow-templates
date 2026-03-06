@@ -1,0 +1,76 @@
+name: Sync org ruleset target repos by prefix
+
+on:
+  workflow_dispatch:
+    inputs:
+      github_host:
+        description: "GitHub host: github.com or your GHES hostname"
+        required: true
+        default: "github.com"
+        type: string
+      org:
+        description: "Target organization"
+        required: true
+        type: string
+      ruleset_id:
+        description: "Organization ruleset ID"
+        required: true
+        type: string
+      repo_prefix:
+        description: "Repo prefix to include, e.g. tf-"
+        required: true
+        type: string
+      mode:
+        description: "union = add missing, exact = replace include list with matches"
+        required: true
+        default: "union"
+        type: choice
+        options: [union, exact]
+      dry_run:
+        description: "If true, do not update the ruleset"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Preflight
+        uses: SecurityUniversalOrg/ghe-actions/actions/gh-preflight-gh-jq@v1
+        with:
+          github_host: ${{ inputs.github_host }}
+          github_token: ${{ secrets.ORG_RULESET_ADMIN_TOKEN }}
+
+      - name: List org repos
+        id: repos
+        uses: SecurityUniversalOrg/ghe-actions/actions/gh-list-org-repos@v1
+        with:
+          github_host: ${{ inputs.github_host }}
+          org: ${{ inputs.org }}
+          github_token: ${{ secrets.ORG_RULESET_ADMIN_TOKEN }}
+
+      - name: Filter repos by prefix
+        id: filter
+        uses: SecurityUniversalOrg/ghe-actions/actions/gh-filter-repos-by-prefix@v1
+        with:
+          repos_json: ${{ steps.repos.outputs.repos_json }}
+          prefix: ${{ inputs.repo_prefix }}
+
+      - name: Sync ruleset target repos
+        uses: SecurityUniversalOrg/ghe-actions/actions/gh-sync-org-ruleset-repo-targets@v1
+        with:
+          github_host: ${{ inputs.github_host }}
+          org: ${{ inputs.org }}
+          ruleset_id: ${{ inputs.ruleset_id }}
+          mode: ${{ inputs.mode }}
+          dry_run: ${{ inputs.dry_run }}
+          target_repos_json: ${{ steps.filter.outputs.matched_repos_json }}
+          github_token: ${{ secrets.ORG_RULESET_ADMIN_TOKEN }}
