@@ -1,0 +1,51 @@
+name: Create a new repository from secure template
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_name:
+        description: "New repository name"
+        required: true
+        type: string
+      type:
+        description: "Type of the new repository"
+        required: true
+        default: "app"
+        type: choice
+        options: [app, library, terraform, image, docker, helm, configuration, cicd]
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Create repository
+    runs-on: federal
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create tf- repo in org on GitHub Cloud
+        uses: SecurityUniversalOrg/ghe-actions/actions/gh-create-repo@v1
+        with:
+          org: SecurityUniversalOrg
+          repo_name: tf-networking
+          description: "Terraform networking repo"
+          visibility: private
+          auto_init: true
+          github_token: ${{ secrets.ORG_ADMIN_TOKEN }}
+
+  apply:
+    needs: [plan]
+    runs-on: self-hosted
+    timeout-minutes: 30
+
+    environment:
+      name: repo-create-prod
+
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.apply == 'true' }}
+
+    steps:
+      - name: Checkout
+        uses: SecurityUniversalOrg/ghe-actions/actions/checkout@v1

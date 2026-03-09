@@ -1,0 +1,156 @@
+name: Create a new repository from secure template
+
+on:
+  workflow_dispatch:
+    inputs:
+      github_host:
+        description: "GitHub host (github.com or GHES hostname)"
+        required: true
+        default: "github.com"
+        type: string
+
+      org:
+        description: "Target organization"
+        required: true
+        default: "SecurityUniversalOrg"
+        type: string
+
+      repo_name:
+        description: "New repository name"
+        required: true
+        type: string
+
+      type:
+        description: "Type of the new repository"
+        required: true
+        default: "app"
+        type: choice
+        options:
+          - app
+          - library
+          - terraform
+          - image
+          - docker
+          - helm
+          - configuration
+          - cicd
+
+      visibility:
+        description: "Repository visibility"
+        required: true
+        default: "private"
+        type: choice
+        options:
+          - private
+          - internal
+
+      description:
+        description: "Repository description"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan repository request
+    runs-on: federal
+
+    outputs:
+      repo_name: ${{ steps.validate.outputs.repo_name }}
+      normalized_type: ${{ steps.validate.outputs.normalized_type }}
+      description: ${{ steps.plan.outputs.description }}
+      template_repo: ${{ steps.plan.outputs.template_repo }}
+      repo_topics_json: ${{ steps.plan.outputs.repo_topics_json }}
+      default_branch: ${{ steps.plan.outputs.default_branch }}
+      visibility: ${{ steps.plan.outputs.visibility }}
+      auto_init: ${{ steps.plan.outputs.auto_init }}
+
+    steps:
+      - name: Checkout
+        uses: SecurityUniversalOrg/ghe-actions/actions/checkout@v1
+
+      - name: Validate request
+        id: validate
+        uses: SecurityUniversalOrg/ghe-actions/actions/repo-request-validate@v1
+        with:
+          repo_name: ${{ inputs.repo_name }}
+          repo_type: ${{ inputs.type }}
+          visibility: ${{ inputs.visibility }}
+
+      - name: Build repository plan
+        id: plan
+        uses: SecurityUniversalOrg/ghe-actions/actions/repo-request-build-plan@v1
+        with:
+          repo_name: ${{ steps.validate.outputs.repo_name }}
+          repo_type: ${{ steps.validate.outputs.normalized_type }}
+          visibility: ${{ inputs.visibility }}
+          description: ${{ inputs.description }}
+
+      - name: Print plan summary
+        uses: SecurityUniversalOrg/ghe-actions/actions/repo-request-print-plan@v1
+        with:
+          org: ${{ inputs.org }}
+          github_host: ${{ inputs.github_host }}
+          repo_name: ${{ steps.validate.outputs.repo_name }}
+          repo_type: ${{ steps.validate.outputs.normalized_type }}
+          template_repo: ${{ steps.plan.outputs.template_repo }}
+          visibility: ${{ steps.plan.outputs.visibility }}
+          default_branch: ${{ steps.plan.outputs.default_branch }}
+          description: ${{ steps.plan.outputs.description }}
+          repo_topics_json: ${{ steps.plan.outputs.repo_topics_json }}
+
+  apply:
+    name: Approve and create repository
+    needs: [plan]
+    runs-on: federal
+    timeout-minutes: 30
+
+    environment:
+      name: repo-create-prod
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: SecurityUniversalOrg/ghe-actions/actions/checkout@v1
+
+      - name: Print approved request
+        uses: SecurityUniversalOrg/ghe-actions/actions/repo-request-print-plan@v1
+        with:
+          org: ${{ inputs.org }}
+          github_host: ${{ inputs.github_host }}
+          repo_name: ${{ needs.plan.outputs.repo_name }}
+          repo_type: ${{ needs.plan.outputs.normalized_type }}
+          template_repo: ${{ needs.plan.outputs.template_repo }}
+          visibility: ${{ needs.plan.outputs.visibility }}
+          default_branch: ${{ needs.plan.outputs.default_branch }}
+          description: ${{ needs.plan.outputs.description }}
+          repo_topics_json: ${{ needs.plan.outputs.repo_topics_json }}
+
+      - name: Create repository from template
+        id: create
+        uses: SecurityUniversalOrg/ghe-actions/actions/gh-create-repo-from-template@v1
+        with:
+          github_host: ${{ inputs.github_host }}
+          org: ${{ inputs.org }}
+          repo_name: ${{ needs.plan.outputs.repo_name }}
+          description: ${{ needs.plan.outputs.description }}
+          visibility: ${{ needs.plan.outputs.visibility }}
+          template_repo: ${{ needs.plan.outputs.template_repo }}
+          default_branch: ${{ needs.plan.outputs.default_branch }}
+          auto_init: ${{ needs.plan.outputs.auto_init }}
+          github_token: ${{ secrets.ORG_ADMIN_TOKEN }}
+
+      - name: Apply repository metadata
+        uses: SecurityUniversalOrg/ghe-actions/actions/gh-configure-new-repo@v1
+        with:
+          github_host: ${{ inputs.github_host }}
+          org: ${{ inputs.org }}
+          repo_name: ${{ needs.plan.outputs.repo_name }}
+          topics_json: ${{ needs.plan.outputs.repo_topics_json }}
+          default_branch: ${{ needs.plan.outputs.default_branch }}
+          github_token: ${{ secrets.ORG_ADMIN_TOKEN }}

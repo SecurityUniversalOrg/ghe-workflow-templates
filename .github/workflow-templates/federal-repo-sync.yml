@@ -1,0 +1,117 @@
+name: Sync from GHEC to GHES
+on:
+  workflow_dispatch:
+    # schedule:
+    #   - cron: '*/15 * * * *'
+jobs:
+  sync-code:
+    runs-on: self-hosted
+    env:
+      GHES_REPO: SecurityUniversalOrg/FederalRestricted
+      GHEC_REPO: SecurityUniversal/FederalRepo
+      SOURCE_BRANCH: main
+      # Change these if your GHES is not on github.com
+      GHES_GIT_HOST: github.com
+      GHES_API_URL: https://api.github.com
+      GHEC_GIT_HOST: github.com
+      GHEC_API_URL: https://api.github.com
+    steps:
+      - name: Setup git identity
+        uses: SecurityUniversalOrg/ghe-actions/actions/setup-git-config@v1
+        with:
+          user_name: "GHES Sync Bot"
+          user_email: "ghes-sync@example.com"
+
+      - name: Get latest commit SHA from GHEC
+        id: get-sha
+        uses: SecurityUniversalOrg/ghe-actions/actions/get-latest-sha@v1
+        with:
+          repo: ${{ env.GHEC_REPO }}
+          branch: ${{ env.SOURCE_BRANCH }}
+          token: ${{ secrets.GHEC_PAT }}
+          api_url: ${{ env.GHEC_API_URL }}
+
+      - name: Checkout GHES repo (for reading .last_synced_sha)
+        uses: SecurityUniversalOrg/ghe-actions/actions/checkout@v1
+        with:
+          repository: ${{ env.GHES_REPO }}
+          token: ${{ secrets.GHES_PAT }}
+
+      - name: Check if sync is needed
+        id: check-sync
+        uses: SecurityUniversalOrg/ghe-actions/actions/check-sync-needed@v1
+        with:
+          ghes_repo: ${{ env.GHES_REPO }}
+          latest_sha: ${{ steps.get-sha.outputs.latest_sha }}
+          token: ${{ secrets.GHES_PAT }}
+          api_url: ${{ env.GHES_API_URL }}
+          last_synced_file: ".last_synced_sha"
+
+      - name: Generate unique branch name
+        id: gen-branch
+        if: steps.check-sync.outputs.sync_needed == 'true'
+        uses: SecurityUniversalOrg/ghe-actions/actions/generate-branch-name@v1
+        with:
+          base_branch: ${{ env.SOURCE_BRANCH }}
+
+      - name: Prepare workspace directories
+        if: steps.check-sync.outputs.sync_needed == 'true'
+        uses: SecurityUniversalOrg/ghe-actions/actions/prepare-workspace@v1
+        with:
+          ghes_dir: ghes-repo-${{ steps.gen-branch.outputs.branch_name }}
+          ghec_dir: ghec-src
+
+      - name: Clone GHES destination repo + create branch
+        if: steps.check-sync.outputs.sync_needed == 'true'
+        uses: SecurityUniversalOrg/ghe-actions/actions/clone-ghes-destination@v1
+        with:
+          repo: ${{ env.GHES_REPO }}
+          token: ${{ secrets.GHES_PAT }}
+          dest_dir: ghes-repo-${{ steps.gen-branch.outputs.branch_name }}
+          branch_name: ${{ steps.gen-branch.outputs.branch_name }}
+          git_host: ${{ env.GHES_GIT_HOST }}
+
+      - name: Clone GHEC source repo
+        if: steps.check-sync.outputs.sync_needed == 'true'
+        uses: SecurityUniversalOrg/ghe-actions/actions/clone-commercial-source@v1
+        with:
+          repo: ${{ env.GHEC_REPO }}
+          token: ${{ secrets.GHEC_PAT }}
+          branch: ${{ env.SOURCE_BRANCH }}
+          dest_dir: ghec-src
+          git_host: ${{ env.GHEC_GIT_HOST }}
+
+      - name: Copy files, record SHA, commit and push
+        if: steps.check-sync.outputs.sync_needed == 'true'
+        uses: SecurityUniversalOrg/ghe-actions/actions/copy-commit-push@v1
+        with:
+          source_dir: ghec-src
+          dest_dir: ghes-repo-${{ steps.gen-branch.outputs.branch_name }}
+          latest_sha: ${{ steps.get-sha.outputs.latest_sha }}
+          branch_name: ${{ steps.gen-branch.outputs.branch_name }}
+
+      - name: Create PR and apply dedupe label
+        if: steps.check-sync.outputs.sync_needed == 'true'
+        id: pr
+        uses: SecurityUniversalOrg/ghe-actions/actions/create-pr-and-label@v1
+        with:
+          repo: ${{ env.GHES_REPO }}
+          token: ${{ secrets.GHES_PAT }}
+          api_url: ${{ env.GHES_API_URL }}
+          title: Sync from GHEC: ${{ steps.gen-branch.outputs.branch_name }}
+          head: ${{ steps.gen-branch.outputs.branch_name }}
+          base: ${{ env.SOURCE_BRANCH }}
+          body: >-
+            This pull request syncs changes from GHEC branch ${{ env.SOURCE_BRANCH }} with commit ${{ steps.get-sha.outputs.latest_sha }} into GHES.
+          label: ${{ steps.check-sync.outputs.sync_label }}
+
+      - name: Create Issue in GHEC source repo
+        if: steps.check-sync.outputs.sync_needed == 'true'
+        uses: SecurityUniversalOrg/ghe-actions/actions/create-issue@v1
+        with:
+          repo: ${{ env.GHEC_REPO }}
+          token: ${{ secrets.GHEC_PAT }}
+          api_url: ${{ env.GHEC_API_URL }}
+          title: GHES Sync Successful
+          body: Code was successfully copied
+          labels_json: '["automated","security"]'
