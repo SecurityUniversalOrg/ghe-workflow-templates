@@ -3,21 +3,15 @@ name: Create enterprise repository
 on:
   workflow_dispatch:
     inputs:
-      github_host:
-        description: "GitHub host (github.com or GHES hostname)"
-        required: true
-        default: "github.com"
-        type: string
-
-      org:
-        description: "Target organization"
-        required: true
-        default: "SecurityUniversalOrg"
-        type: string
-
       repo_name:
         description: "New repository name"
         required: true
+        type: string
+
+      description:
+        description: "Repository description"
+        required: false
+        default: ""
         type: string
 
       type:
@@ -43,16 +37,13 @@ on:
         options:
           - private
           - internal
-          - public
-
-      description:
-        description: "Repository description"
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: read
+
+env:
+  GITHUB_HOST: github.com
+  GITHUB_ORG: SecurityUniversalOrg
 
 jobs:
   request:
@@ -104,8 +95,8 @@ jobs:
       - name: "#### REVIEW - Repository Creation Plan ####"
         uses: SecurityUniversalOrg/ghe-actions/actions/repo-request-print-enterprise-plan@v1
         with:
-          github_host: ${{ inputs.github_host }}
-          org: ${{ inputs.org }}
+          github_host: ${{ env.GITHUB_HOST }}
+          org: ${{ env.GITHUB_ORG }}
           repo_name: ${{ steps.validate.outputs.repo_name }}
           repo_type: ${{ steps.validate.outputs.normalized_type }}
           description: ${{ steps.plan.outputs.description }}
@@ -136,8 +127,8 @@ jobs:
         id: create
         uses: SecurityUniversalOrg/ghe-actions/actions/gh-create-repo-from-template@v1
         with:
-          github_host: ${{ inputs.github_host }}
-          org: ${{ inputs.org }}
+          github_host: ${{ env.GITHUB_HOST }}
+          org: ${{ env.GITHUB_ORG }}
           repo_name: ${{ needs.request.outputs.repo_name }}
           description: ${{ needs.request.outputs.description }}
           visibility: ${{ needs.request.outputs.visibility }}
@@ -149,8 +140,8 @@ jobs:
       - name: Configure baseline repository settings
         uses: SecurityUniversalOrg/ghe-actions/actions/gh-configure-new-repo@v1
         with:
-          github_host: ${{ inputs.github_host }}
-          org: ${{ inputs.org }}
+          github_host: ${{ env.GITHUB_HOST }}
+          org: ${{ env.GITHUB_ORG }}
           repo_name: ${{ needs.request.outputs.repo_name }}
           topics_json: ${{ needs.request.outputs.topics_json }}
           default_branch: ${{ needs.request.outputs.default_branch }}
@@ -159,8 +150,8 @@ jobs:
       - name: Assign repository teams
         uses: SecurityUniversalOrg/ghe-actions/actions/gh-assign-repo-teams@v1
         with:
-          github_host: ${{ inputs.github_host }}
-          org: ${{ inputs.org }}
+          github_host: ${{ env.GITHUB_HOST }}
+          org: ${{ env.GITHUB_ORG }}
           repo_name: ${{ needs.request.outputs.repo_name }}
           admin_teams_json: ${{ needs.request.outputs.admin_teams_json }}
           write_teams_json: ${{ needs.request.outputs.write_teams_json }}
@@ -170,8 +161,8 @@ jobs:
       - name: Add repo to org rulesets
         uses: SecurityUniversalOrg/ghe-actions/actions/gh-add-repo-to-rulesets-by-name@v1
         with:
-          github_host: ${{ inputs.github_host }}
-          org: ${{ inputs.org }}
+          github_host: ${{ env.GITHUB_HOST }}
+          org: ${{ env.GITHUB_ORG }}
           repo_name: ${{ needs.request.outputs.repo_name }}
           ruleset_names_json: ${{ needs.request.outputs.ruleset_names_json }}
           github_token: ${{ secrets.RULESET_ADMIN_TOKEN }}
@@ -179,8 +170,8 @@ jobs:
       - name: Add repo to runner groups
         uses: SecurityUniversalOrg/ghe-actions/actions/gh-add-repo-to-runner-groups@v1
         with:
-          github_host: ${{ inputs.github_host }}
-          org: ${{ inputs.org }}
+          github_host: ${{ env.GITHUB_HOST }}
+          org: ${{ env.GITHUB_ORG }}
           repo_name: ${{ needs.request.outputs.repo_name }}
           runner_group_names_json: ${{ needs.request.outputs.runner_group_names_json }}
           github_token: ${{ secrets.RUNNER_GROUP_ADMIN_TOKEN }}
@@ -188,8 +179,8 @@ jobs:
       - name: Create repository environments
         uses: SecurityUniversalOrg/ghe-actions/actions/gh-create-repo-environments@v1
         with:
-          github_host: ${{ inputs.github_host }}
-          org: ${{ inputs.org }}
+          github_host: ${{ env.GITHUB_HOST }}
+          org: ${{ env.GITHUB_ORG }}
           repo_name: ${{ needs.request.outputs.repo_name }}
           environments_json: ${{ needs.request.outputs.environments_json }}
           github_token: ${{ secrets.RULESET_ADMIN_TOKEN }}
@@ -197,8 +188,8 @@ jobs:
       - name: Print final audit summary
         uses: SecurityUniversalOrg/ghe-actions/actions/repo-request-print-final-summary@v1
         with:
-          github_host: ${{ inputs.github_host }}
-          org: ${{ inputs.org }}
+          github_host: ${{ env.GITHUB_HOST }}
+          org: ${{ env.GITHUB_ORG }}
           repo_name: ${{ needs.request.outputs.repo_name }}
           repo_type: ${{ needs.request.outputs.repo_type }}
           repo_url: ${{ steps.create.outputs.html_url }}
