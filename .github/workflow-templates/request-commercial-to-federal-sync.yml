@@ -1,0 +1,108 @@
+name: Request commercial-to-federal repo sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_name:
+        description: "Commercial repository name to sync to federal"
+        required: true
+        type: string
+      repo_type:
+        description: "Type of repository"
+        required: true
+        type: choice
+        options:
+          - app
+          - library
+          - terraform
+          - image
+          - docker
+          - helm
+          - configuration
+          - cicd
+      commercial_org:
+        description: "Commercial GitHub organization"
+        required: true
+        default: "SecurityUniversalOrg"
+        type: string
+      federal_org:
+        description: "Federal GitHub organization"
+        required: true
+        default: "SecurityUniversalOrg-Federal"
+        type: string
+      justification:
+        description: "Reason for requesting sync"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  request:
+    name: Submit sync request
+    runs-on: federal
+
+    outputs:
+      repo_name: ${{ steps.validate.outputs.repo_name }}
+      repo_type: ${{ steps.validate.outputs.repo_type }}
+      commercial_org: ${{ steps.validate.outputs.commercial_org }}
+      federal_org: ${{ steps.validate.outputs.federal_org }}
+      justification: ${{ steps.validate.outputs.justification }}
+      request_summary_json: ${{ steps.build.outputs.request_summary_json }}
+
+    steps:
+      - name: Checkout
+        uses: SecurityUniversalOrg/ghe-actions/actions/checkout@v1
+
+      - name: Validate sync request
+        id: validate
+        uses: SecurityUniversalOrg/ghe-actions/actions/validate-commercial-to-federal-sync-request@v1
+        with:
+          repo_name: ${{ inputs.repo_name }}
+          repo_type: ${{ inputs.repo_type }}
+          commercial_org: ${{ inputs.commercial_org }}
+          federal_org: ${{ inputs.federal_org }}
+          justification: ${{ inputs.justification }}
+
+      - name: Build sync request summary
+        id: build
+        uses: SecurityUniversalOrg/ghe-actions/actions/build-commercial-to-federal-sync-summary@v1
+        with:
+          repo_name: ${{ steps.validate.outputs.repo_name }}
+          repo_type: ${{ steps.validate.outputs.repo_type }}
+          commercial_org: ${{ steps.validate.outputs.commercial_org }}
+          federal_org: ${{ steps.validate.outputs.federal_org }}
+          justification: ${{ steps.validate.outputs.justification }}
+
+      - name: Print request summary
+        uses: SecurityUniversalOrg/ghe-actions/actions/print-commercial-to-federal-sync-summary@v1
+        with:
+          request_summary_json: ${{ steps.build.outputs.request_summary_json }}
+          approval_status: "PENDING"
+
+  approval:
+    name: Approval required
+    needs: [request]
+    runs-on: federal
+
+    environment:
+      name: repo-sync-federal-approval
+
+    steps:
+      - name: Checkout
+        uses: SecurityUniversalOrg/ghe-actions/actions/checkout@v1
+
+      - name: Print approved request summary
+        uses: SecurityUniversalOrg/ghe-actions/actions/print-commercial-to-federal-sync-summary@v1
+        with:
+          request_summary_json: ${{ needs.request.outputs.request_summary_json }}
+          approval_status: "APPROVED"
+
+      - name: Print manual implementation instructions
+        uses: SecurityUniversalOrg/ghe-actions/actions/print-commercial-to-federal-manual-next-steps@v1
+        with:
+          repo_name: ${{ needs.request.outputs.repo_name }}
+          repo_type: ${{ needs.request.outputs.repo_type }}
+          commercial_org: ${{ needs.request.outputs.commercial_org }}
+          federal_org: ${{ needs.request.outputs.federal_org }}
