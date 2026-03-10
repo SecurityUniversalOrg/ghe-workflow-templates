@@ -3,37 +3,29 @@ name: Add runner groups to repository
 on:
   workflow_dispatch:
     inputs:
-      github_host:
-        description: "GitHub host (github.com or GHES hostname)"
-        required: true
-        default: "github.com"
-        type: string
-
-      org:
-        description: "Target organization"
-        required: true
-        default: "SecurityUniversalOrg"
-        type: string
-
       repo_name:
         description: "Repository name (without owner prefix)"
         required: true
         type: string
 
-      runner_group_names_json:
-        description: 'JSON array of runner group names, e.g. ["fed-testing","shared-linux"]'
-        required: false
-        default: '[]'
-        type: string
-
-      runner_group_ids_json:
-        description: 'JSON array of runner group IDs, e.g. [12,34]'
-        required: false
-        default: '[]'
-        type: string
+      runner_group:
+        description: "Runner group to assign"
+        required: true
+        type: choice
+        options:
+          - sec-scan
+          - fed-testing
+          - container-build
+          - iac-build-deploy
+          - k8s-deploy
+          - lang-runtime
 
 permissions:
   contents: read
+
+env:
+  GITHUB_HOST: github.com
+  GITHUB_ORG: SecurityUniversalOrg
 
 jobs:
   request:
@@ -44,22 +36,27 @@ jobs:
       github_host: ${{ steps.validate.outputs.github_host }}
       org: ${{ steps.validate.outputs.org }}
       repo_name: ${{ steps.validate.outputs.repo_name }}
-      runner_group_names_json: ${{ steps.validate.outputs.runner_group_names_json }}
+      runner_group_names_json: ${{ steps.build.outputs.runner_group_names_json }}
       runner_group_ids_json: ${{ steps.validate.outputs.runner_group_ids_json }}
 
     steps:
       - name: Checkout
         uses: SecurityUniversalOrg/ghe-actions/actions/checkout@v1
 
+      - name: Build runner group JSON
+        id: build
+        uses: SecurityUniversalOrg/ghe-actions/actions/build-runner-group-json@v1
+        with:
+          runner_group: ${{ inputs.runner_group }}
+
       - name: Validate runner group request
         id: validate
         uses: SecurityUniversalOrg/ghe-actions/actions/validate-runner-group-request@v1
         with:
-          github_host: ${{ inputs.github_host }}
-          org: ${{ inputs.org }}
+          github_host: ${{ env.GITHUB_HOST }}
+          org: ${{ env.GITHUB_ORG }}
           repo_name: ${{ inputs.repo_name }}
-          runner_group_names_json: ${{ inputs.runner_group_names_json }}
-          runner_group_ids_json: ${{ inputs.runner_group_ids_json }}
+          runner_group_names_json: ${{ steps.build.outputs.runner_group_names_json }}
 
       - name: Print request summary
         uses: SecurityUniversalOrg/ghe-actions/actions/print-runner-group-request-summary@v1
@@ -68,7 +65,6 @@ jobs:
           org: ${{ steps.validate.outputs.org }}
           repo_name: ${{ steps.validate.outputs.repo_name }}
           runner_group_names_json: ${{ steps.validate.outputs.runner_group_names_json }}
-          runner_group_ids_json: ${{ steps.validate.outputs.runner_group_ids_json }}
 
   apply:
     name: Approve and add runner groups
@@ -90,7 +86,6 @@ jobs:
           org: ${{ needs.request.outputs.org }}
           repo_name: ${{ needs.request.outputs.repo_name }}
           runner_group_names_json: ${{ needs.request.outputs.runner_group_names_json }}
-          runner_group_ids_json: ${{ needs.request.outputs.runner_group_ids_json }}
 
       - name: Add repository to runner groups
         uses: SecurityUniversalOrg/ghe-actions/actions/gh-add-repo-to-runner-groups@v1
@@ -99,5 +94,4 @@ jobs:
           org: ${{ needs.request.outputs.org }}
           repo_name: ${{ needs.request.outputs.repo_name }}
           runner_group_names_json: ${{ needs.request.outputs.runner_group_names_json }}
-          runner_group_ids_json: ${{ needs.request.outputs.runner_group_ids_json }}
           github_token: ${{ secrets.RUNNER_GROUP_ADMIN_TOKEN }}
