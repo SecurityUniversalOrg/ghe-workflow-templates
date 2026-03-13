@@ -20,3 +20,11 @@ Each template lives under `.github/workflow-templates/` and includes a matching 
   - `repo-dispatch-receiver.yml` – echo incoming `repository_dispatch`
 - **Release / tagging**
   - `release-semver-tag.yml` – version bump & tag (protected by required checks)
+
+
+## User Guides
+[Add Runner Groups to Repo](.github/workflow-templates/user_guides/Add_Runner_Groups_to_Repo.md)
+
+[Create Enterprise Repository](.github/workflow-templates/user_guides/Create_Enterprise_Repository.md)
+
+[Request Commercial to Federal Sync](.github/workflow-templates/user_guides/Request_Commercial_to_Federal_Sync.md)
