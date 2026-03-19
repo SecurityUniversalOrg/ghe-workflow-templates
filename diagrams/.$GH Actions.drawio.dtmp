@@ -1,4 +1,4 @@
-<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/27.0.9 Chrome/134.0.6998.205 Electron/35.4.0 Safari/537.36" version="27.0.9" pages="6">
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/27.0.9 Chrome/134.0.6998.205 Electron/35.4.0 Safari/537.36" version="27.0.9" pages="7">
   <diagram name="Page-1" id="iROhU90IoZfTqWUlBWNJ">
     <mxGraphModel dx="1410" dy="1709" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
@@ -680,12 +680,12 @@
     </mxGraphModel>
   </diagram>
   <diagram name="repo builder" id="6Y4AxhtuXcOaCAOJwoZE">
-    <mxGraphModel dx="4958" dy="1523" grid="1" gridSize="10" guides="0" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="4923" dy="1523" grid="1" gridSize="10" guides="0" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="AriKy33z4BFEtUV1YOZk-0" />
         <mxCell id="AriKy33z4BFEtUV1YOZk-1" parent="AriKy33z4BFEtUV1YOZk-0" />
         <mxCell id="8VVon98Li4pzxpfCb0NJ-0" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="AriKy33z4BFEtUV1YOZk-1">
-          <mxGeometry x="-560" y="40" width="120" height="60" as="geometry" />
+          <mxGeometry x="-560" y="40" width="310" height="470" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
@@ -970,6 +970,47 @@
         </mxCell>
         <mxCell id="6eqSquSOzTcfeDTtE810-92" value="&lt;b&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;2&lt;/font&gt;&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="6eqSquSOzTcfeDTtE810-90">
           <mxGeometry x="2" y="1" width="26" height="29" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="EAR0T7KGT4ZgAsIUE0x2" name="Page-7">
+    <mxGraphModel dx="2463" dy="1009" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="4OH1DqMjOVlEK6Vjgmjb-1" value="" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="-640" width="285" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="4OH1DqMjOVlEK6Vjgmjb-2" value="security-pipeline.yml&lt;div&gt;&lt;b&gt;GH Workflow&lt;/b&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="-562.5" y="-40" width="130" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="4OH1DqMjOVlEK6Vjgmjb-3" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="-612.5" y="50" width="230" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="4OH1DqMjOVlEK6Vjgmjb-4" value="initialize&lt;div&gt;&lt;b&gt;Workflow Job&lt;/b&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="-547.5" y="10" width="100" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="4OH1DqMjOVlEK6Vjgmjb-5" value="uses: rw-initialize-pipeline.yml@main" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="-607.5" y="50" width="220" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="4OH1DqMjOVlEK6Vjgmjb-6" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="-612.5" y="150" width="230" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="4OH1DqMjOVlEK6Vjgmjb-7" value="pipeline&lt;div&gt;&lt;b&gt;Workflow Job&lt;/b&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="-547.5" y="110" width="100" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="4OH1DqMjOVlEK6Vjgmjb-8" value="uses: rw-security-pipeline.yml@main" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="-607.5" y="150" width="220" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="4OH1DqMjOVlEK6Vjgmjb-9" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="-480" y="390" width="230" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="4OH1DqMjOVlEK6Vjgmjb-10" value="pipeline&lt;div&gt;&lt;b&gt;Workflow Job&lt;/b&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="-415" y="350" width="100" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="4OH1DqMjOVlEK6Vjgmjb-11" value="uses: rw-security-pipeline.yml@main" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="-475" y="390" width="220" height="30" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
