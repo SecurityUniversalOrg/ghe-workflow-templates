@@ -154,7 +154,7 @@ jobs:
 
       - name: Upload AI SARIF to scanned repo
         if: ${{ inputs.upload_sarif == 'true' }}
-        uses: ./central-repo/.github/actions/upload-sarif-api
+        uses: SecurityUniversalOrg/ghe-actions/actions/gh-upload-sarif-api@v1
         with:
           token: ${{ secrets.ORG_SECURITY_TOKEN }}
           owner: ${{ matrix.owner }}
@@ -167,19 +167,21 @@ jobs:
       - name: Create mitigation issue in scanned repo
         if: ${{ inputs.create_issues == 'true' }}
         id: create-issue
-        uses: ./central-repo/.github/actions/create-mitigation-issue
+        uses: SecurityUniversalOrg/ghe-actions/actions/gh-create-mitigation-issue@v1
         with:
           token: ${{ secrets.ORG_SECURITY_TOKEN }}
           owner: ${{ matrix.owner }}
           repo: ${{ matrix.repo }}
           title-prefix: AI-assisted security triage
-          mitigation-report-file: ${{ steps.ai-analysis.outputs.mitigation-report-file }}
-          ai-triage-file: ${{ steps.ai-analysis.outputs.ai-triage-file }}
+          # mitigation-report-file: ${{ steps.ai-analysis.outputs.mitigation-report-file }}
+          mitigation-report-file: "central-repo/config/mitigation-report.md"
+          # ai-triage-file: ${{ steps.ai-analysis.outputs.ai-triage-file }}
+          ai-triage-file: "central-repo/config/ai-triage.json"
           github-api-url: ${{ env.GITHUB_API_URL }}
 
       - name: Summarize repository findings
         id: summary
-        uses: ./central-repo/.github/actions/summarize-repo-findings
+        uses: SecurityUniversalOrg/ghe-actions/actions/summarize-repo-findings@v1
         with:
           owner: ${{ matrix.owner }}
           repo: ${{ matrix.repo }}
@@ -218,7 +220,7 @@ jobs:
           path: downloaded-reports
 
       - name: Update org_findings.csv and reports directory
-        uses: ./central-repo/.github/actions/update-org-findings
+        uses: SecurityUniversalOrg/ghe-actions/actions/gh-update-org-findings@v1
         with:
           central-repo-path: central-repo
           downloaded-reports-path: downloaded-reports
@@ -226,7 +228,7 @@ jobs:
           reports-directory: reports
 
       - name: Create central reporting PR
-        uses: ./central-repo/.github/actions/create-central-report-pr
+        uses: SecurityUniversalOrg/ghe-actions/actions/gh-create-central-report-pr@v1
         with:
           token: ${{ secrets.ORG_SECURITY_TOKEN }}
           central-repo-path: central-repo
