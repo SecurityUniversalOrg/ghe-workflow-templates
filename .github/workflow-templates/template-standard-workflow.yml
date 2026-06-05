@@ -1,0 +1,121 @@
+name: Template - Standard Workflow
+
+run-name: >-
+  ${{ github.workflow }} | ${{ github.ref_name }} | ${{ github.actor }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - test
+          - stage
+          - prod
+      dry-run:
+        description: Run without making changes
+        required: true
+        default: true
+        type: boolean
+
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ inputs.environment || 'default' }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ENTERPRISE_NAME: "YOUR_ENTERPRISE"
+  ORG_NAME: "YOUR_ORG"
+  APP_NAME: "YOUR_APP"
+  DEFAULT_REGION: "us-east-1"
+
+jobs:
+  validate:
+    name: Validate Inputs and Context
+    runs-on: ubuntu-latest
+
+    outputs:
+      effective-environment: ${{ steps.context.outputs.effective-environment }}
+      dry-run: ${{ steps.context.outputs.dry-run }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup workflow context
+        id: context
+        uses: ./.github/actions/setup-context
+        with:
+          environment: ${{ inputs.environment || 'dev' }}
+          dry-run: ${{ inputs.dry-run || 'true' }}
+
+      - name: Validate inputs
+        uses: ./.github/actions/validate-inputs
+        with:
+          environment: ${{ steps.context.outputs.effective-environment }}
+          allowed-environments: "dev,test,stage,prod"
+
+  build-or-scan-or-deploy:
+    name: Main Execution
+    runs-on: ubuntu-latest
+    needs:
+      - validate
+
+    environment: ${{ needs.validate.outputs.effective-environment }}
+
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run enterprise tool
+        uses: ./.github/actions/run-tool
+        with:
+          command-name: "example-command"
+          command-args: "--environment ${{ needs.validate.outputs.effective-environment }}"
+          dry-run: ${{ needs.validate.outputs.dry-run }}
+
+      - name: Publish artifacts
+        if: always()
+        uses: ./.github/actions/publish-artifacts
+        with:
+          artifact-name: "workflow-output"
+          artifact-path: "output"
+          retention-days: "30"
+
+      - name: Create job summary
+        if: always()
+        uses: ./.github/actions/create-summary
+        with:
+          title: "Template Workflow Summary"
+          environment: ${{ needs.validate.outputs.effective-environment }}
+          status: ${{ job.status }}

@@ -1,0 +1,52 @@
+name: Setup Context
+description: Normalizes common enterprise workflow context values.
+
+inputs:
+  environment:
+    description: Target environment
+    required: false
+    default: dev
+
+  dry-run:
+    description: Whether to run in dry-run mode
+    required: false
+    default: "true"
+
+outputs:
+  effective-environment:
+    description: Normalized environment name
+    value: ${{ steps.context.outputs.effective-environment }}
+
+  dry-run:
+    description: Normalized dry-run value
+    value: ${{ steps.context.outputs.dry-run }}
+
+runs:
+  using: composite
+  steps:
+    - name: Normalize context
+      id: context
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        environment="${{ inputs.environment }}"
+        dry_run="${{ inputs.dry-run }}"
+
+        environment="$(echo "$environment" | tr '[:upper:]' '[:lower:]')"
+
+        case "$dry_run" in
+          true|false)
+            ;;
+          *)
+            echo "Invalid dry-run value: $dry_run"
+            echo "Expected true or false."
+            exit 1
+            ;;
+        esac
+
+        echo "effective-environment=$environment" >> "$GITHUB_OUTPUT"
+        echo "dry-run=$dry_run" >> "$GITHUB_OUTPUT"
+
+        echo "Effective environment: $environment"
+        echo "Dry run: $dry_run"

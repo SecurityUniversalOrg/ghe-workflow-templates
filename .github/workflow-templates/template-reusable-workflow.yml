@@ -1,0 +1,113 @@
+name: Template - Reusable Enterprise Workflow
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: string
+
+      runner:
+        description: Runner label
+        required: false
+        type: string
+        default: ubuntu-latest
+
+      working-directory:
+        description: Directory to execute from
+        required: false
+        type: string
+        default: "."
+
+      dry-run:
+        description: Run without making changes
+        required: false
+        type: boolean
+        default: true
+
+      artifact-name:
+        description: Output artifact name
+        required: false
+        type: string
+        default: workflow-output
+
+    secrets:
+      enterprise-token:
+        description: Optional enterprise token or app token
+        required: false
+
+    outputs:
+      result:
+        description: Result of the reusable workflow
+        value: ${{ jobs.execute.outputs.result }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reusable-${{ github.workflow }}-${{ github.repository }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+    working-directory: ${{ inputs.working-directory }}
+
+jobs:
+  execute:
+    name: Execute Reusable Workflow
+    runs-on: ${{ inputs.runner }}
+
+    environment: ${{ inputs.environment }}
+
+    outputs:
+      result: ${{ steps.result.outputs.result }}
+
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate execution context
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Workflow: $GITHUB_WORKFLOW"
+          echo "Ref: $GITHUB_REF"
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Dry run: ${{ inputs.dry-run }}"
+
+      - name: Main reusable workflow logic
+        shell: bash
+        env:
+          ENTERPRISE_TOKEN: ${{ secrets.enterprise-token }}
+        run: |
+          set -euo pipefail
+
+          if [ "${{ inputs.dry-run }}" = "true" ]; then
+            echo "Dry run enabled. No changes will be made."
+          fi
+
+          mkdir -p output
+          echo "Reusable workflow completed." > output/result.txt
+
+      - name: Upload output artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: output
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Set reusable workflow output
+        id: result
+        shell: bash
+        run: |
+          echo "result=success" >> "$GITHUB_OUTPUT"

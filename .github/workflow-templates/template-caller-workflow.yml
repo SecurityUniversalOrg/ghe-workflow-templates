@@ -1,0 +1,44 @@
+name: Call Enterprise Reusable Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        default: dev
+        options:
+          - dev
+          - test
+          - stage
+          - prod
+
+  pull_request:
+    branches:
+      - main
+
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  call-enterprise-workflow:
+    name: Call Enterprise Workflow
+
+    # Best security practice: pin to a release tag or commit SHA.
+    uses: YOUR_ORG/YOUR_ENTERPRISE_ACTIONS_REPO/.github/workflows/template-reusable-workflow.yml@v1
+
+    with:
+      environment: ${{ inputs.environment || 'dev' }}
+      runner: ubuntu-latest
+      working-directory: "."
+      dry-run: ${{ github.event_name == 'pull_request' }}
+      artifact-name: "${{ github.event.repository.name }}-output"
+
+    secrets:
+      enterprise-token: ${{ secrets.ENTERPRISE_TOKEN }}

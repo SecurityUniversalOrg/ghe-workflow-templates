@@ -1,0 +1,54 @@
+name: Run Tool
+description: Runs a generic enterprise command with optional dry-run behavior.
+
+inputs:
+  command-name:
+    description: Command or tool name
+    required: true
+
+  command-args:
+    description: Arguments to pass to the command
+    required: false
+    default: ""
+
+  dry-run:
+    description: Whether to run in dry-run mode
+    required: false
+    default: "true"
+
+  working-directory:
+    description: Directory to execute from
+    required: false
+    default: "."
+
+runs:
+  using: composite
+  steps:
+    - name: Run command
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+
+        command_name="${{ inputs.command-name }}"
+        command_args="${{ inputs.command-args }}"
+        dry_run="${{ inputs.dry-run }}"
+
+        echo "Command: $command_name"
+        echo "Arguments: $command_args"
+        echo "Dry run: $dry_run"
+
+        if [ "$dry_run" = "true" ]; then
+          echo "Dry run enabled. Command preview:"
+          echo "$command_name $command_args"
+          exit 0
+        fi
+
+        # Replace this with the enterprise-approved execution pattern.
+        # Example:
+        #   terraform plan
+        #   npm test
+        #   dotnet build
+        #   helm upgrade --install
+        #   gh api ...
+        $command_name $command_args

@@ -1,0 +1,38 @@
+name: Publish Artifacts
+description: Uploads workflow artifacts using standard enterprise defaults.
+
+inputs:
+  artifact-name:
+    description: Name of the artifact
+    required: true
+
+  artifact-path:
+    description: Path to upload
+    required: true
+
+  retention-days:
+    description: Number of days to retain the artifact
+    required: false
+    default: "30"
+
+runs:
+  using: composite
+  steps:
+    - name: Check artifact path
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ ! -e "${{ inputs.artifact-path }}" ]; then
+          echo "Artifact path does not exist: ${{ inputs.artifact-path }}"
+          mkdir -p "${{ inputs.artifact-path }}"
+          echo "No files were produced." > "${{ inputs.artifact-path }}/README.txt"
+        fi
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.artifact-path }}
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: warn
