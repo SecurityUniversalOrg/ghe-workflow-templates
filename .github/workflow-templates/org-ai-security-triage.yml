@@ -227,6 +227,13 @@ jobs:
           org-findings-file: org_findings.csv
           reports-directory: reports
 
+      - name: Upload org_findings artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: org_findings
+          path: org_findings.csv
+          retention-days: 30
+
       - name: Create central reporting PR
         uses: SecurityUniversalOrg/ghe-actions/actions/gh-create-central-report-pr@v1
         with:
